@@ -1,0 +1,16 @@
+# Virtual environment
+venv/
+env/
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Django
+*.sqlite3
+media/
+
+# Windows
+Thumbs.db
