@@ -2,15 +2,31 @@
 venv/
 env/
 .env
+.env.*          # catches .env.local, .env.production, etc.
 
 # Python
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
 
 # Django
 *.sqlite3
 media/
+staticfiles/    # collected static files (from collectstatic)
+local_settings.py  # machine-specific settings
 
-# Windows
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
 Thumbs.db
+.DS_Store       # Mac equivalent of Thumbs.db
+
+# Logs
+*.log
