@@ -137,3 +137,34 @@ def staff_login(request):
         }, status=status.HTTP_401_UNAUTHORIZED)
 
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+#end Point
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def create_admin(request):
+    secret = request.data.get('secret')
+    if secret != 'carbuddies2026':
+        return Response({'error': 'forbidden'}, status=403)
+    try:
+        from accounts.models import User, Staff
+        if not User.objects.filter(email='admin@carbuddies.com').exists():
+            User.objects.create_superuser(
+                email='admin@carbuddies.com',
+                password='Admin@2081'
+            )
+        if not User.objects.filter(email='staff1@carbuddies.com').exists():
+            u = User.objects.create_user(
+                email='staff1@carbuddies.com',
+                password='Nepal@2081',
+                user_type='staff',
+                is_active=True,
+            )
+            Staff.objects.create(
+                user=u,
+                full_name='Staff One',
+                phone='9800000000',
+                employee_id='EMP001'
+            )
+        return Response({'message': 'Done! Admin and Staff created.'})
+    except Exception as e:
+        return Response({'error': str(e)}, status=500)
