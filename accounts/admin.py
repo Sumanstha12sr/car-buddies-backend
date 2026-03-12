@@ -1,6 +1,6 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
-from .models import User, Customer, Staff, Vehicle, ChargingStation, Charger,TimeSlot,ChargingBooking
+from .models import User, Customer, Staff, Vehicle, ChargingStation, Charger,TimeSlot,ChargingBooking,ServiceCategory,Service,Mechanic,ServiceBooking,ServiceReport,CustomerFeedback
 
 class UserAdmin(BaseUserAdmin):
     list_display = ['email', 'user_type', 'is_active', 'is_staff']
@@ -21,7 +21,12 @@ class UserAdmin(BaseUserAdmin):
 admin.site.register(User, UserAdmin)
 admin.site.register(Customer)
 admin.site.register(Staff)
-
+admin.site.register(ServiceCategory)
+admin.site.register(Service)
+admin.site.register(Mechanic)
+admin.site.register(ServiceBooking)
+admin.site.register(ServiceReport)
+admin.site.register(CustomerFeedback)
 
 @admin.register(Vehicle)
 class VehicleAdmin(admin.ModelAdmin):

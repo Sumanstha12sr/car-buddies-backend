@@ -213,3 +213,205 @@ class ChargingBooking(models.Model):
             self.estimated_cost = self.estimated_energy * self.charger.price_per_kwh
         
         super().save(*args, **kwargs)
+
+# Other Services
+class ServiceCategory(models.Model):
+    """Car Wash or EV Check — top level category"""
+    CATEGORY_CHOICES = (
+        ('car_wash', 'Car Wash'),
+        ('ev_check', 'EV Check'),
+    )
+    name = models.CharField(max_length=20, choices=CATEGORY_CHOICES, unique=True)
+    description = models.TextField(blank=True)
+    is_active = models.BooleanField(default=True)
+
+    def __str__(self):
+        return self.get_name_display()
+
+    class Meta:
+        verbose_name_plural = 'Service Categories'
+
+
+class Service(models.Model):
+    """
+    Individual services under each category.
+    Admin adds/updates these from Django admin panel.
+
+    Examples:
+      Car Wash  → Full Wash, Interior Wash, Exterior Wash, Dry Wash
+      EV Check  → Quick Checkup, Normal Checkup, Full Diagnostic
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    category = models.ForeignKey(
+        ServiceCategory,
+        on_delete=models.CASCADE,
+        related_name='services'
+    )
+    name = models.CharField(max_length=100)
+    description = models.TextField(blank=True)
+    price = models.DecimalField(max_digits=8, decimal_places=2, help_text='Price in NPR')
+    duration_minutes = models.IntegerField(help_text='Estimated duration in minutes')
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f'{self.category} — {self.name} (NPR {self.price})'
+
+    class Meta:
+        ordering = ['category', 'name']
+
+
+class Mechanic(models.Model):
+    """
+    Mechanics for EV Check service.
+    Each mechanic is linked to a Staff member.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    staff = models.OneToOneField(
+        Staff,
+        on_delete=models.CASCADE,
+        related_name='mechanic_profile'
+    )
+    specialization = models.CharField(
+        max_length=200,
+        help_text='e.g. Battery, Motor, General EV'
+    )
+    experience_years = models.IntegerField(default=0)
+    is_available = models.BooleanField(default=True)
+
+    def __str__(self):
+        return f'{self.staff.full_name} — {self.specialization}'
+
+
+class ServiceBooking(models.Model):
+    """
+    A booking for Car Wash or EV Check service.
+    Single model handles both service types.
+    """
+    STATUS_CHOICES = (
+        ('pending', 'Pending'),
+        ('confirmed', 'Confirmed'),
+        ('in_progress', 'In Progress'),
+        ('completed', 'Completed'),
+        ('cancelled', 'Cancelled'),
+    )
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    customer = models.ForeignKey(
+        Customer,
+        on_delete=models.CASCADE,
+        related_name='service_bookings'
+    )
+    vehicle = models.ForeignKey(
+        Vehicle,
+        on_delete=models.CASCADE,
+        related_name='service_bookings'
+    )
+    service = models.ForeignKey(
+        Service,
+        on_delete=models.CASCADE,
+        related_name='bookings'
+    )
+    # Mechanic is only assigned for EV Check bookings
+    assigned_mechanic = models.ForeignKey(
+        Mechanic,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='assigned_bookings'
+    )
+    booking_date = models.DateField()
+    preferred_time = models.TimeField(help_text='Customer preferred time')
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default='pending'
+    )
+    notes = models.TextField(blank=True, help_text='Customer notes')
+    staff_notes = models.TextField(blank=True, help_text='Internal staff notes')
+    estimated_cost = models.DecimalField(
+        max_digits=8,
+        decimal_places=2,
+        null=True,
+        blank=True
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f'{self.service.name} — {self.customer.full_name} — {self.booking_date}'
+
+    def save(self, *args, **kwargs):
+        # Auto set estimated cost from service price
+        if not self.estimated_cost:
+            self.estimated_cost = self.service.price
+        super().save(*args, **kwargs)
+
+    class Meta:
+        ordering = ['-created_at']
+
+
+class ServiceReport(models.Model):
+    """
+    Report created by staff after EV Check completion.
+    Customer can view this to know vehicle health.
+    """
+    CONDITION_CHOICES = (
+        ('excellent', 'Excellent'),
+        ('good', 'Good'),
+        ('fair', 'Fair'),
+        ('poor', 'Poor'),
+        ('critical', 'Critical'),
+    )
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    booking = models.OneToOneField(
+        ServiceBooking,
+        on_delete=models.CASCADE,
+        related_name='report'
+    )
+    issues_found = models.TextField(
+        blank=True,
+        help_text='List of issues found during check'
+    )
+    recommendations = models.TextField(
+        blank=True,
+        help_text='Recommended actions'
+    )
+    overall_condition = models.CharField(
+        max_length=20,
+        choices=CONDITION_CHOICES,
+        default='good'
+    )
+    battery_health = models.IntegerField(
+        null=True,
+        blank=True,
+        help_text='Battery health percentage 0-100'
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f'Report — {self.booking} — {self.overall_condition}'
+
+
+class CustomerFeedback(models.Model):
+    """
+    Customer feedback after service completion.
+    Staff notifies customer to give feedback.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    booking = models.OneToOneField(
+        ServiceBooking,
+        on_delete=models.CASCADE,
+        related_name='feedback'
+    )
+    rating = models.IntegerField(
+        help_text='Rating from 1 to 5',
+        default=5
+    )
+    comment = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f'Feedback — {self.booking.customer.full_name} — {self.rating}/5'
