@@ -40,6 +40,14 @@ urlpatterns = [
          service_views.get_service_report,
          name='service-report'),
 
+     path('vehicle/<uuid:vehicle_id>/booked-slots/',
+     service_views.get_vehicle_booked_slots,
+     name='vehicle-booked-slots'),
+
+     path('customer/analytics/',
+     service_views.get_customer_analytics,
+     name='customer-analytics'),
+
     # ── Staff: Bookings ────────────────────────────────────────────
     path('staff/bookings/',
          service_views.staff_get_all_service_bookings,

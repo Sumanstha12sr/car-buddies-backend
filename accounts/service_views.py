@@ -451,3 +451,260 @@ def staff_get_service_statistics(request):
         'car_wash_total': car_wash,
         'ev_check_total': ev_check,
     })
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_vehicle_booked_slots(request, vehicle_id):
+    """
+    Returns all booked time slots for a vehicle on a given date.
+    Checks BOTH charging bookings AND service bookings.
+
+    GET /api/services/vehicle/<vehicle_id>/booked-slots/?date=2026-03-20
+
+    Response:
+    {
+        "booked_hours": [9, 10, 14],   # list of booked hours (0-23)
+        "date": "2026-03-20"
+    }
+    """
+    from .models import Vehicle, ChargingBooking
+    from django.utils.dateparse import parse_date
+
+    date_str = request.query_params.get('date')
+    if not date_str:
+        return Response(
+            {'error': 'date parameter is required (format: YYYY-MM-DD)'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    booking_date = parse_date(date_str)
+    if not booking_date:
+        return Response(
+            {'error': 'Invalid date format. Use YYYY-MM-DD'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    # Verify vehicle exists and belongs to this customer
+    try:
+        vehicle = Vehicle.objects.get(id=vehicle_id)
+    except Vehicle.DoesNotExist:
+        return Response(
+            {'error': 'Vehicle not found'},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    booked_hours = set()
+
+    # 1. Check service bookings (car wash / ev check)
+    service_bookings = ServiceBooking.objects.filter(
+        vehicle=vehicle,
+        booking_date=booking_date,
+        status__in=['pending', 'confirmed', 'in_progress']
+    )
+    for booking in service_bookings:
+        if booking.preferred_time:
+            try:
+                hour = int(str(booking.preferred_time).split(':')[0])
+                booked_hours.add(hour)
+            except (ValueError, IndexError):
+                pass
+
+    # 2. Check charging bookings
+    charging_bookings = ChargingBooking.objects.filter(
+        vehicle=vehicle,
+        booking_date=booking_date,
+        status__in=['pending', 'confirmed', 'in_progress']
+    )
+    for booking in charging_bookings:
+        if booking.start_time:
+            try:
+                hour = int(str(booking.start_time).split(':')[0])
+                booked_hours.add(hour)
+            except (ValueError, IndexError):
+                pass
+
+    return Response({
+        'date': date_str,
+        'vehicle_id': str(vehicle_id),
+        'booked_hours': sorted(list(booked_hours)),
+    })
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_customer_analytics(request):
+    """
+    Returns analytics data for the logged-in customer.
+
+    GET /api/services/customer/analytics/
+
+    Response:
+    {
+        "total_spent": 5200.00,
+        "spent_by_category": {
+            "charging": 2000.00,
+            "car_wash": 1500.00,
+            "ev_check": 1700.00
+        },
+        "bookings_by_service": [
+            {"name": "Full Wash", "count": 3, "total": 1500.00},
+            ...
+        ],
+        "monthly_trend": [
+            {"month": "Jan 2026", "amount": 800.00},
+            ...
+        ],
+        "most_visited_station": {
+            "name": "Bhaktapur Central EV Hub",
+            "count": 4
+        },
+        "total_bookings": 12,
+        "completed_bookings": 9
+    }
+    """
+    from .models import ChargingBooking, ChargingStation
+    from django.db.models import Sum, Count
+    from django.utils import timezone
+    from collections import defaultdict
+    import calendar
+
+    try:
+        customer = request.user.customer
+    except Exception:
+        return Response(
+            {'error': 'Customer profile not found'},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    # ── Service Bookings (completed only for spending) ──────────
+    completed_services = ServiceBooking.objects.filter(
+        customer=customer,
+        status='completed'
+    ).select_related('service', 'service__category')
+
+    # ── Charging Bookings (completed only) ──────────────────────
+    completed_charging = ChargingBooking.objects.filter(
+        customer=customer,
+        status='completed'
+    ).select_related('charger__station')
+
+    # ── Total spent ─────────────────────────────────────────────
+    service_spent = sum(
+        float(b.estimated_cost or b.service.price)
+        for b in completed_services
+    )
+    charging_spent = sum(
+        float(b.estimated_cost or 0)
+        for b in completed_charging
+        if b.estimated_cost
+    )
+    total_spent = service_spent + charging_spent
+
+    # ── Spent by category ───────────────────────────────────────
+    car_wash_spent = sum(
+        float(b.estimated_cost or b.service.price)
+        for b in completed_services
+        if b.service.category.name == 'car_wash'
+    )
+    ev_check_spent = sum(
+        float(b.estimated_cost or b.service.price)
+        for b in completed_services
+        if b.service.category.name == 'ev_check'
+    )
+
+    spent_by_category = {
+        'charging': round(charging_spent, 2),
+        'car_wash': round(car_wash_spent, 2),
+        'ev_check': round(ev_check_spent, 2),
+    }
+
+    # ── Bookings by service ──────────────────────────────────────
+    service_counts = defaultdict(lambda: {'count': 0, 'total': 0.0})
+    for b in completed_services:
+        name = b.service.name
+        service_counts[name]['count'] += 1
+        service_counts[name]['total'] += float(
+            b.estimated_cost or b.service.price
+        )
+
+    bookings_by_service = [
+        {
+            'name': name,
+            'count': data['count'],
+            'total': round(data['total'], 2),
+        }
+        for name, data in service_counts.items()
+    ]
+    # Sort by count descending
+    bookings_by_service.sort(key=lambda x: x['count'], reverse=True)
+
+    # ── Monthly trend (last 6 months) ───────────────────────────
+    today = timezone.now().date()
+    monthly = defaultdict(float)
+
+    for b in completed_services:
+        key = b.booking_date.strftime('%b %Y')
+        monthly[key] += float(b.estimated_cost or b.service.price)
+
+    for b in completed_charging:
+        if b.estimated_cost:
+            key = b.booking_date.strftime('%b %Y')
+            monthly[key] += float(b.estimated_cost)
+
+    # Build last 6 months in order
+    monthly_trend = []
+    for i in range(5, -1, -1):
+        # Go back i months from today
+        month = today.month - i
+        year = today.year
+        while month <= 0:
+            month += 12
+            year -= 1
+        key = f"{calendar.month_abbr[month]} {year}"
+        monthly_trend.append({
+            'month': key,
+            'amount': round(monthly.get(key, 0.0), 2),
+        })
+
+    # ── Most visited station ─────────────────────────────────────
+    all_charging = ChargingBooking.objects.filter(
+        customer=customer
+    ).select_related('charger__station')
+
+    station_counts = defaultdict(int)
+    for b in all_charging:
+        try:
+            name = b.charger.station.name
+            station_counts[name] += 1
+        except Exception:
+            pass
+
+    most_visited_station = None
+    if station_counts:
+        top_station = max(station_counts, key=station_counts.get)
+        most_visited_station = {
+            'name': top_station,
+            'count': station_counts[top_station],
+        }
+
+    # ── Total booking counts ─────────────────────────────────────
+    total_service_bookings = ServiceBooking.objects.filter(
+        customer=customer
+    ).count()
+    total_charging_bookings = ChargingBooking.objects.filter(
+        customer=customer
+    ).count()
+
+    completed_service_count = completed_services.count()
+    completed_charging_count = completed_charging.count()
+
+    return Response({
+        'total_spent': round(total_spent, 2),
+        'spent_by_category': spent_by_category,
+        'bookings_by_service': bookings_by_service,
+        'monthly_trend': monthly_trend,
+        'most_visited_station': most_visited_station,
+        'total_bookings': total_service_bookings + total_charging_bookings,
+        'completed_bookings': completed_service_count + completed_charging_count,
+    })

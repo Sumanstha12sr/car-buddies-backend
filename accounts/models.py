@@ -67,30 +67,48 @@ class Vehicle(models.Model):
     VEHICLE_TYPE_CHOICES = (
         ('electric', 'Electric Vehicle'),
         ('hybrid', 'Hybrid Vehicle'),
+        ('ice', 'Internal Combustion Engine'),  
     )
-    
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     customer = models.ForeignKey('Customer', on_delete=models.CASCADE, related_name='vehicles')
-    vehicle_name = models.CharField(max_length=100)  # e.g., "Tesla Model 3"
-    vehicle_number = models.CharField(max_length=20, unique=True)  # e.g., "BA-1-PA-1234"
+    vehicle_name = models.CharField(max_length=100)
+    vehicle_number = models.CharField(max_length=20, unique=True)
     vehicle_type = models.CharField(max_length=20, choices=VEHICLE_TYPE_CHOICES)
-    battery_capacity = models.DecimalField(max_digits=5, decimal_places=2, help_text="In kWh")  # e.g., 75.00 kWh
-    charging_port_type = models.CharField(max_length=50)  # e.g., "Type 2", "CCS"
+    battery_capacity = models.DecimalField(
+        max_digits=5, decimal_places=2,
+        null=True, blank=True,          
+        help_text="In kWh (EV/Hybrid only)"
+    )
+    charging_port_type = models.CharField(
+        max_length=50,
+        null=True, blank=True           
+    )
     is_default = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-    
+
     class Meta:
         ordering = ['-is_default', '-created_at']
-    
+
     def __str__(self):
         return f"{self.vehicle_name} - {self.vehicle_number}"
-    
+
     def save(self, *args, **kwargs):
-        # If this vehicle is set as default, remove default from other vehicles
         if self.is_default:
-            Vehicle.objects.filter(customer=self.customer, is_default=True).update(is_default=False)
+            Vehicle.objects.filter(
+                customer=self.customer, is_default=True
+            ).update(is_default=False)
         super().save(*args, **kwargs)
+
+   #  Helpers
+    @property
+    def is_ev(self):
+        return self.vehicle_type in ['electric', 'hybrid']
+
+    @property
+    def is_ice(self):
+        return self.vehicle_type == 'ice'
 
 
 # Charging Station Model
