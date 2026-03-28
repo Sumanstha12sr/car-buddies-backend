@@ -47,34 +47,26 @@ class CustomerRegistrationSerializer(serializers.Serializer):
 
 
 class LoginSerializer(serializers.Serializer):
-    """Used by both customer_login and staff_login views"""
     email = serializers.EmailField()
     password = serializers.CharField(write_only=True)
 
 
 class CustomerSerializer(serializers.ModelSerializer):
-    """Returns customer profile data after login"""
     email = serializers.EmailField(source='user.email', read_only=True)
     user_type = serializers.CharField(source='user.user_type', read_only=True)
 
     class Meta:
         model = Customer
-        fields = [
-            'email', 'full_name', 'user_type', 'phone',
-        ]
+        fields = ['email', 'full_name', 'user_type', 'phone']
 
 
 class StaffSerializer(serializers.ModelSerializer):
-    """Returns staff profile data after login"""
     email = serializers.EmailField(source='user.email', read_only=True)
     user_type = serializers.CharField(source='user.user_type', read_only=True)
 
     class Meta:
         model = Staff
-        fields = [
-            'email', 'full_name', 'user_type',
-            'employee_id', 'phone',
-        ]
+        fields = ['email', 'full_name', 'user_type', 'employee_id', 'phone']
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -108,9 +100,7 @@ class VehicleCreateSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         customer = validated_data.get('customer')
         if validated_data.get('is_default', False) and customer:
-            Vehicle.objects.filter(
-                customer=customer
-            ).update(is_default=False)
+            Vehicle.objects.filter(customer=customer).update(is_default=False)
         return super().create(validated_data)
 
 
@@ -151,10 +141,7 @@ class ChargingStationListSerializer(serializers.ModelSerializer):
         return obj.chargers.count()
 
     def get_available_chargers(self, obj):
-        return obj.chargers.filter(
-            is_available=True,
-            status='available'
-        ).count()
+        return obj.chargers.filter(is_available=True, status='available').count()
 
     def get_amenities_list(self, obj):
         if obj.amenities:
@@ -185,10 +172,7 @@ class ChargingStationDetailSerializer(serializers.ModelSerializer):
 class TimeSlotSerializer(serializers.ModelSerializer):
     class Meta:
         model = TimeSlot
-        fields = [
-            'id', 'date', 'start_time',
-            'end_time', 'is_available',
-        ]
+        fields = ['id', 'date', 'start_time', 'end_time', 'is_available']
 
 
 # ==================== BOOKING SERIALIZERS ====================
@@ -213,9 +197,7 @@ class ChargingBookingSerializer(serializers.ModelSerializer):
             'estimated_energy', 'estimated_cost',
             'actual_energy', 'actual_cost',
             'notes', 'created_at',
-            # Related fields
-            'station_name',
-            'charger_name', 'charger_type',
+            'station_name', 'charger_name', 'charger_type',
             'vehicle_name', 'vehicle_number',
             'time_slot_start', 'time_slot_end',
             'customer_name', 'customer_email', 'customer_phone',
@@ -275,7 +257,7 @@ class ChargingBookingCreateSerializer(serializers.ModelSerializer):
                 {'time_slot': 'This time slot is no longer available'}
             )
 
-        # Prevent double booking
+        # Prevent double booking on same charger + slot
         existing = ChargingBooking.objects.filter(
             charger=charger,
             time_slot=time_slot,
@@ -287,11 +269,33 @@ class ChargingBookingCreateSerializer(serializers.ModelSerializer):
                 {'time_slot': 'This slot has already been booked'}
             )
 
-        # Check vehicle belongs to this customer
         customer = self.context['request'].user.customer
-        if data['vehicle'].customer != customer:
+        vehicle = data['vehicle']
+
+        if vehicle.customer != customer:
             raise serializers.ValidationError(
                 {'vehicle': 'This vehicle does not belong to you'}
+            )
+
+        # ── ICE vehicles cannot book chargers ───────────────────────
+        if vehicle.is_ice:
+            raise serializers.ValidationError(
+                {'vehicle': 'ICE vehicles cannot book EV charging stations. Only car wash is available for ICE vehicles.'}
+            )
+
+        # ── Same user: cross-service conflict ───────────────────────
+        # If this customer already has ANY booking at this time, block it
+        slot_start = time_slot.start_time
+
+        existing_service = ServiceBooking.objects.filter(
+            customer=customer,
+            booking_date=booking_date,
+            preferred_time=slot_start,
+            status__in=['pending', 'confirmed', 'in_progress']
+        )
+        if existing_service.exists():
+            raise serializers.ValidationError(
+                {'time_slot': 'You already have a booking at this time.'}
             )
 
         return data
@@ -303,21 +307,19 @@ class ChargingBookingCreateSerializer(serializers.ModelSerializer):
                 validated_data['estimated_energy'] * charger.price_per_kwh
             )
 
-        # Get start/end time from time slot
         time_slot = validated_data['time_slot']
         validated_data['start_time'] = time_slot.start_time
         validated_data['end_time'] = time_slot.end_time
-
         validated_data['customer'] = self.context['request'].user.customer
         validated_data['status'] = 'pending'
 
         booking = super().create(validated_data)
 
-        # Lock time slot immediately
         time_slot.is_available = False
         time_slot.save()
 
         return booking
+
 
 # ==================== SERVICE CATEGORY ====================
 
@@ -337,13 +339,9 @@ class ServiceCategorySerializer(serializers.ModelSerializer):
 
 class ServiceSerializer(serializers.ModelSerializer):
     category_name = serializers.CharField(
-        source='category.get_name_display',
-        read_only=True
-    )
+        source='category.get_name_display', read_only=True)
     category_type = serializers.CharField(
-        source='category.name',
-        read_only=True
-    )
+        source='category.name', read_only=True)
 
     class Meta:
         model = Service
@@ -358,21 +356,14 @@ class ServiceSerializer(serializers.ModelSerializer):
 # ==================== MECHANIC ====================
 
 class MechanicSerializer(serializers.ModelSerializer):
-    full_name = serializers.CharField(
-        source='staff.full_name',
-        read_only=True
-    )
-    email = serializers.CharField(
-        source='staff.user.email',
-        read_only=True
-    )
+    full_name = serializers.CharField(source='staff.full_name', read_only=True)
+    email = serializers.CharField(source='staff.user.email', read_only=True)
 
     class Meta:
         model = Mechanic
         fields = [
             'id', 'full_name', 'email',
-            'specialization', 'experience_years',
-            'is_available',
+            'specialization', 'experience_years', 'is_available',
         ]
 
 
@@ -383,8 +374,7 @@ class ServiceReportSerializer(serializers.ModelSerializer):
         model = ServiceReport
         fields = [
             'id', 'issues_found', 'recommendations',
-            'overall_condition', 'battery_health',
-            'created_at',
+            'overall_condition', 'battery_health', 'created_at',
         ]
         read_only_fields = ['id', 'created_at']
 
@@ -406,45 +396,23 @@ class CustomerFeedbackSerializer(serializers.ModelSerializer):
 # ==================== SERVICE BOOKING ====================
 
 class ServiceBookingSerializer(serializers.ModelSerializer):
-    """Full booking details — used for displaying bookings"""
-    service_name = serializers.CharField(
-        source='service.name',
-        read_only=True
-    )
+    service_name = serializers.CharField(source='service.name', read_only=True)
     service_price = serializers.DecimalField(
-        source='service.price',
-        max_digits=8,
-        decimal_places=2,
-        read_only=True
-    )
+        source='service.price', max_digits=8, decimal_places=2, read_only=True)
     service_duration = serializers.IntegerField(
-        source='service.duration_minutes',
-        read_only=True
-    )
+        source='service.duration_minutes', read_only=True)
     category_type = serializers.CharField(
-        source='service.category.name',
-        read_only=True
-    )
+        source='service.category.name', read_only=True)
     customer_name = serializers.CharField(
-        source='customer.full_name',
-        read_only=True
-    )
+        source='customer.full_name', read_only=True)
     customer_phone = serializers.CharField(
-        source='customer.phone',
-        read_only=True
-    )
+        source='customer.phone', read_only=True)
     customer_email = serializers.CharField(
-        source='customer.user.email',
-        read_only=True
-    )
+        source='customer.user.email', read_only=True)
     vehicle_name = serializers.CharField(
-        source='vehicle.vehicle_name',
-        read_only=True
-    )
+        source='vehicle.vehicle_name', read_only=True)
     vehicle_number = serializers.CharField(
-        source='vehicle.vehicle_number',
-        read_only=True
-    )
+        source='vehicle.vehicle_number', read_only=True)
     mechanic_name = serializers.SerializerMethodField()
     report = ServiceReportSerializer(read_only=True)
     feedback = CustomerFeedbackSerializer(read_only=True)
@@ -455,16 +423,11 @@ class ServiceBookingSerializer(serializers.ModelSerializer):
             'id', 'status', 'booking_date', 'preferred_time',
             'estimated_cost', 'notes', 'staff_notes',
             'created_at', 'updated_at',
-            # service info
             'service_name', 'service_price',
             'service_duration', 'category_type',
-            # customer info
             'customer_name', 'customer_phone', 'customer_email',
-            # vehicle info
             'vehicle_name', 'vehicle_number',
-            # mechanic info
             'mechanic_name',
-            # nested
             'report', 'feedback',
         ]
 
@@ -475,7 +438,7 @@ class ServiceBookingSerializer(serializers.ModelSerializer):
 
 
 class ServiceBookingCreateSerializer(serializers.ModelSerializer):
-    """Used when customer creates a new booking"""
+    """Used when customer creates a new service booking"""
 
     class Meta:
         model = ServiceBooking
@@ -488,6 +451,7 @@ class ServiceBookingCreateSerializer(serializers.ModelSerializer):
         service = data.get('service')
         vehicle = data.get('vehicle')
         booking_date = data.get('booking_date')
+        preferred_time = data.get('preferred_time')
 
         # Check service is active
         if not service.is_active:
@@ -502,7 +466,14 @@ class ServiceBookingCreateSerializer(serializers.ModelSerializer):
                 {'vehicle': 'This vehicle does not belong to you'}
             )
 
-        # Prevent duplicate booking same service same date
+        # ── ICE vehicles can ONLY book car wash ─────────────────────
+        if vehicle.is_ice:
+            if service.category.name != 'car_wash':
+                raise serializers.ValidationError(
+                    {'vehicle': 'ICE vehicles can only book car wash services.'}
+                )
+
+        # ── Prevent duplicate: same customer, same service, same date ─
         existing = ServiceBooking.objects.filter(
             customer=customer,
             service=service,
@@ -512,6 +483,48 @@ class ServiceBookingCreateSerializer(serializers.ModelSerializer):
         if existing.exists():
             raise serializers.ValidationError(
                 'You already have a booking for this service on this date'
+            )
+
+        # ── Different user conflict: same service, same date+time ────
+        # If User A books car wash at 10 AM,
+        # User B cannot book that same service at 10 AM
+        conflicting_service = ServiceBooking.objects.filter(
+            service=service,
+            booking_date=booking_date,
+            preferred_time=preferred_time,
+            status__in=['pending', 'confirmed', 'in_progress']
+        ).exclude(customer=customer)
+        if conflicting_service.exists():
+            raise serializers.ValidationError(
+                {'preferred_time': 'This service is already booked for the selected time.'}
+            )
+
+        # ── Same user conflict: already has a charging booking ───────
+        # If this customer booked a charger at 10 AM,
+        # they cannot book any service at 10 AM
+        existing_charging = ChargingBooking.objects.filter(
+            customer=customer,
+            booking_date=booking_date,
+            start_time=preferred_time,
+            status__in=['pending', 'confirmed', 'in_progress']
+        )
+        if existing_charging.exists():
+            raise serializers.ValidationError(
+                {'preferred_time': 'You already have a booking at this time.'}
+            )
+
+        # ── Same user conflict: already has a different service ──────
+        # If this customer booked car wash at 10 AM,
+        # they cannot book EV check at 10 AM either
+        existing_other_service = ServiceBooking.objects.filter(
+            customer=customer,
+            booking_date=booking_date,
+            preferred_time=preferred_time,
+            status__in=['pending', 'confirmed', 'in_progress']
+        ).exclude(service=service)
+        if existing_other_service.exists():
+            raise serializers.ValidationError(
+                {'preferred_time': 'You already have a booking at this time.'}
             )
 
         return data

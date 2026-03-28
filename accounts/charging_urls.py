@@ -19,7 +19,8 @@ urlpatterns = [
 
     # ── Chargers & Time Slots ───────────────────────────────────────────────
     path('chargers/<uuid:charger_id>/time-slots/', charging_views.get_available_time_slots, name='time_slots'),
-
+    path('services/time-slots/', charging_views.get_service_time_slots, name='service_time_slots'),
+    
     # ── Customer Bookings ───────────────────────────────────────────────────
     path('bookings/create/', charging_views.create_booking, name='create_booking'),
 

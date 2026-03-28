@@ -85,6 +85,9 @@ class Vehicle(models.Model):
         null=True, blank=True           
     )
     is_default = models.BooleanField(default=False)
+    @property
+    def is_ice(self):
+        return self.vehicle_type == 'ice'
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

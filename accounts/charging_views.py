@@ -4,7 +4,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.utils import timezone
 from datetime import datetime, timedelta, time
-from .models import Vehicle, ChargingStation, Charger, TimeSlot, ChargingBooking, Customer
+from .models import Vehicle, ChargingStation, Charger, TimeSlot, ChargingBooking, Customer, ServiceBooking
 from .serializers import (
     VehicleSerializer, VehicleCreateSerializer,
     ChargingStationListSerializer, ChargingStationDetailSerializer,
@@ -233,8 +233,6 @@ def get_available_time_slots(request, charger_id):
             _generate_time_slots(charger, booking_date)
 
         # ── Lock slots that have active bookings ───────────────────
-        # Only pending, confirmed, in_progress lock the slot
-        # Completed and cancelled FREE the slot
         active_bookings = ChargingBooking.objects.filter(
             charger=charger,
             booking_date=booking_date,
@@ -252,7 +250,6 @@ def get_available_time_slots(request, charger_id):
             status__in=['completed', 'cancelled']
         )
         for booking in inactive_bookings:
-            # Only free if no other active booking on same slot
             other_active = ChargingBooking.objects.filter(
                 time_slot=booking.time_slot,
                 status__in=['pending', 'confirmed', 'in_progress']
@@ -270,7 +267,6 @@ def get_available_time_slots(request, charger_id):
 
         # ── Filter out past time slots if booking is today ─────────
         if booking_date == today:
-            # Add 30 min buffer so customer has time to travel
             buffer_time = (
                 datetime.combine(today, now_time) +
                 timedelta(minutes=30)
@@ -280,11 +276,37 @@ def get_available_time_slots(request, charger_id):
                 start_time__gt=buffer_time
             )
 
-        serializer = TimeSlotSerializer(all_slots, many=True)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        # ── Build response with cross-service conflict flag ─────────
+        customer = Customer.objects.get(user=request.user)
+
+        charging_booked_times = set(
+            ChargingBooking.objects.filter(
+                customer=customer,
+                booking_date=booking_date,
+                status__in=['pending', 'confirmed', 'in_progress']
+            ).values_list('start_time', flat=True)
+        )
+        service_booked_times = set(
+            ServiceBooking.objects.filter(
+                customer=customer,
+                booking_date=booking_date,
+                status__in=['pending', 'confirmed', 'in_progress']
+            ).values_list('preferred_time', flat=True)
+        )
+        all_booked_times = charging_booked_times | service_booked_times
+
+        slot_data = []
+        for slot in all_slots:
+            slot_dict = TimeSlotSerializer(slot).data
+            slot_dict['user_conflict'] = slot.start_time in all_booked_times
+            slot_data.append(slot_dict)
+
+        return Response(slot_data, status=status.HTTP_200_OK)
 
     except Charger.DoesNotExist:
         return Response({'error': 'Charger not found'}, status=status.HTTP_404_NOT_FOUND)
+    except Customer.DoesNotExist:
+        return Response({'error': 'Customer profile not found'}, status=status.HTTP_404_NOT_FOUND)
     except ValueError:
         return Response(
             {'error': 'Invalid date format. Use YYYY-MM-DD'},
@@ -293,16 +315,17 @@ def get_available_time_slots(request, charger_id):
 
 
 def _generate_time_slots(charger, date):
-    """Generate time slots using get_or_create to avoid duplicates"""
+    """
+    Generate hourly time slots for charging.
+    AC and DC both use: 6 AM to 8 PM, 1-hour slots.
+    """
     slots = []
     start_hour = 6   # 6 AM
-    end_hour = 22    # 10 PM
-    slot_duration = 2  # 2 hours per slot
+    end_hour = 20    # 8 PM (last slot is 7 PM - 8 PM)
 
-    for hour in range(start_hour, end_hour, slot_duration):
+    for hour in range(start_hour, end_hour):
         start_time = time(hour, 0)
-        end_time = time(hour + slot_duration, 0) \
-            if hour + slot_duration < 24 else time(23, 59)
+        end_time = time(hour + 1, 0)
 
         slot, created = TimeSlot.objects.get_or_create(
             charger=charger,
@@ -316,6 +339,121 @@ def _generate_time_slots(charger, date):
         slots.append(slot)
 
     return slots
+
+
+# ==================== SERVICE TIME SLOTS ====================
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_service_time_slots(request):
+    """
+    Returns hourly time slots for car wash / EV checkup.
+    Hours: 8 AM to 5 PM.
+
+    Logic:
+    - user_conflict = True  → this customer already has a booking at this time
+                               (blocks them from double-booking any service)
+    - is_available = False  → this specific service is already booked by
+                               another user at this time
+
+    Query params:
+      date      (YYYY-MM-DD) — required
+      service   (uuid)       — optional, used to check per-service availability
+    """
+    date_str = request.query_params.get('date')
+    service_id = request.query_params.get('service')
+
+    if not date_str:
+        return Response(
+            {'error': 'Date parameter is required'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    try:
+        booking_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+    except ValueError:
+        return Response(
+            {'error': 'Invalid date format. Use YYYY-MM-DD'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    today = datetime.now().date()
+    now_time = datetime.now().time()
+
+    if booking_date < today:
+        return Response(
+            {'error': 'Cannot book slots in the past'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    try:
+        customer = Customer.objects.get(user=request.user)
+    except Customer.DoesNotExist:
+        return Response(
+            {'error': 'Customer profile not found'},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    # ── Times this customer already has ANY booking ───────────────
+    # Blocks them from booking any other service at the same time
+    customer_charging_times = set(
+        ChargingBooking.objects.filter(
+            customer=customer,
+            booking_date=booking_date,
+            status__in=['pending', 'confirmed', 'in_progress']
+        ).values_list('start_time', flat=True)
+    )
+    customer_service_times = set(
+        ServiceBooking.objects.filter(
+            customer=customer,
+            booking_date=booking_date,
+            status__in=['pending', 'confirmed', 'in_progress']
+        ).values_list('preferred_time', flat=True)
+    )
+    customer_booked_times = customer_charging_times | customer_service_times
+
+    # ── Times this specific service is booked by ANY user ─────────
+    # Blocks other users from booking the same service at same time
+    service_booked_times = set()
+    if service_id:
+        service_booked_times = set(
+            ServiceBooking.objects.filter(
+                service_id=service_id,
+                booking_date=booking_date,
+                status__in=['pending', 'confirmed', 'in_progress']
+            ).values_list('preferred_time', flat=True)
+        )
+
+    # Generate 8 AM to 5 PM hourly slots
+    slots = []
+    start_hour = 8
+    end_hour = 17  # last slot is 4 PM - 5 PM
+
+    for hour in range(start_hour, end_hour):
+        slot_time = time(hour, 0)
+
+        # Skip past slots when booking today (30 min buffer)
+        if booking_date == today:
+            buffer = (
+                datetime.combine(today, now_time) + timedelta(minutes=30)
+            ).time()
+            if slot_time <= buffer:
+                continue
+
+        # is_available = False means this service is taken by another user
+        is_available = slot_time not in service_booked_times
+
+        # user_conflict = True means this customer already has a booking here
+        user_conflict = slot_time in customer_booked_times
+
+        slots.append({
+            'start_time': slot_time.strftime('%H:%M:%S'),
+            'end_time': time(hour + 1, 0).strftime('%H:%M:%S'),
+            'is_available': is_available,
+            'user_conflict': user_conflict,
+        })
+
+    return Response(slots, status=status.HTTP_200_OK)
 
 
 # ==================== BOOKING MANAGEMENT ====================
@@ -398,7 +536,6 @@ def cancel_booking(request, booking_id):
         booking.save()
 
         # ── Free up time slot ──────────────────────────────────────
-        # Check no other active booking on same slot
         other_active = ChargingBooking.objects.filter(
             time_slot=booking.time_slot,
             status__in=['pending', 'confirmed', 'in_progress']
@@ -495,8 +632,6 @@ def update_booking_status(request, booking_id):
         # ── Status transition logic ────────────────────────────────
 
         if new_status == 'confirmed':
-            # Staff accepted — lock the time slot
-            # Charger stays physically available (customer not arrived yet)
             booking.time_slot.is_available = False
             booking.time_slot.save()
 
@@ -505,13 +640,11 @@ def update_booking_status(request, booking_id):
             charger.save()
 
         elif new_status == 'in_progress':
-            # Customer arrived — charger is now physically occupied
             charger.status = 'occupied'
             charger.is_available = False
             charger.save()
 
         elif new_status == 'completed':
-            # Charging done — free up time slot
             other_active = ChargingBooking.objects.filter(
                 time_slot=booking.time_slot,
                 status__in=['pending', 'confirmed', 'in_progress']
@@ -521,7 +654,6 @@ def update_booking_status(request, booking_id):
                 booking.time_slot.is_available = True
                 booking.time_slot.save()
 
-            # Free charger if no other in_progress bookings
             other_in_progress = ChargingBooking.objects.filter(
                 charger=charger,
                 status='in_progress'
@@ -533,7 +665,6 @@ def update_booking_status(request, booking_id):
                 charger.save()
 
         elif new_status == 'cancelled':
-            # Staff rejected — free time slot
             other_active = ChargingBooking.objects.filter(
                 time_slot=booking.time_slot,
                 status__in=['pending', 'confirmed', 'in_progress']
@@ -543,7 +674,6 @@ def update_booking_status(request, booking_id):
                 booking.time_slot.is_available = True
                 booking.time_slot.save()
 
-            # Only free charger if it was physically in use
             if old_status == 'in_progress':
                 other_in_progress = ChargingBooking.objects.filter(
                     charger=charger,
