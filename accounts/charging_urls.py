@@ -31,4 +31,7 @@ urlpatterns = [
     path('bookings/<uuid:booking_id>/', charging_views.get_booking_detail, name='booking_detail'),
     path('bookings/<uuid:booking_id>/cancel/', charging_views.cancel_booking, name='cancel_booking'),
     path('bookings/<uuid:booking_id>/update-status/', charging_views.update_booking_status, name='update_booking_status'),
+
+    path('admin/trigger-auto-cancel/', charging_views.manual_trigger_auto_cancel, name='trigger_auto_cancel'),
+    
 ]

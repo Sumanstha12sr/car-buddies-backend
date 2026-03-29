@@ -727,3 +727,26 @@ def get_booking_statistics(request):
 
     except Exception as e:
         return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+    
+    # Add at the bottom of charging_views.py
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def manual_trigger_auto_cancel(request):
+    """
+    Staff only — manually trigger the auto-cancel job for testing.
+    POST /api/charging/admin/trigger-auto-cancel/
+    """
+    if request.user.user_type not in ['staff', 'admin']:
+        return Response(
+            {'error': 'Only staff can trigger this'},
+            status=status.HTTP_403_FORBIDDEN
+        )
+
+    from .scheduler import auto_cancel_pending_bookings
+    auto_cancel_pending_bookings()
+
+    return Response(
+        {'message': 'Auto-cancel job triggered successfully'},
+        status=status.HTTP_200_OK
+    )
