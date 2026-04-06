@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
-from .models import Customer, Staff, Vehicle, ChargingStation, Charger, TimeSlot, ChargingBooking, ServiceCategory, Service, Mechanic, ServiceBooking, ServiceReport, CustomerFeedback
+from .models import BlueBookRenewal, Customer, Staff, Vehicle, ChargingStation, Charger, TimeSlot, ChargingBooking, ServiceCategory, Service, Mechanic, ServiceBooking, ServiceReport
 
 User = get_user_model()
 
@@ -356,16 +356,12 @@ class ServiceSerializer(serializers.ModelSerializer):
 # ==================== MECHANIC ====================
 
 class MechanicSerializer(serializers.ModelSerializer):
-    full_name = serializers.CharField(source='staff.full_name', read_only=True)
-    email = serializers.CharField(source='staff.user.email', read_only=True)
-
     class Meta:
         model = Mechanic
         fields = [
-            'id', 'full_name', 'email',
-            'specialization', 'experience_years', 'is_available',
+            'id', 'full_name', 'specialization',
+            'experience_years', 'is_available',
         ]
-
 
 # ==================== SERVICE REPORT ====================
 
@@ -379,18 +375,7 @@ class ServiceReportSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'created_at']
 
 
-# ==================== CUSTOMER FEEDBACK ====================
 
-class CustomerFeedbackSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = CustomerFeedback
-        fields = ['id', 'rating', 'comment', 'created_at']
-        read_only_fields = ['id', 'created_at']
-
-    def validate_rating(self, value):
-        if value < 1 or value > 5:
-            raise serializers.ValidationError('Rating must be between 1 and 5')
-        return value
 
 
 # ==================== SERVICE BOOKING ====================
@@ -415,7 +400,7 @@ class ServiceBookingSerializer(serializers.ModelSerializer):
         source='vehicle.vehicle_number', read_only=True)
     mechanic_name = serializers.SerializerMethodField()
     report = ServiceReportSerializer(read_only=True)
-    feedback = CustomerFeedbackSerializer(read_only=True)
+    
 
     class Meta:
         model = ServiceBooking
@@ -428,12 +413,12 @@ class ServiceBookingSerializer(serializers.ModelSerializer):
             'customer_name', 'customer_phone', 'customer_email',
             'vehicle_name', 'vehicle_number',
             'mechanic_name',
-            'report', 'feedback',
+            'report',
         ]
 
     def get_mechanic_name(self, obj):
         if obj.assigned_mechanic:
-            return obj.assigned_mechanic.staff.full_name
+             return obj.assigned_mechanic.full_name
         return None
 
 
@@ -532,4 +517,48 @@ class ServiceBookingCreateSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         validated_data['customer'] = self.context['request'].user.customer
         validated_data['estimated_cost'] = validated_data['service'].price
+        return super().create(validated_data)
+    
+    # ==================== BLUE BOOK RENEWAL ====================
+
+class BlueBookRenewalSerializer(serializers.ModelSerializer):
+    customer_name = serializers.CharField(
+        source='customer.full_name', read_only=True)
+    customer_email = serializers.CharField(
+        source='customer.user.email', read_only=True)
+
+    class Meta:
+        model = BlueBookRenewal
+        fields = [
+            'id', 'status', 'vehicle_type', 'manufacture_year',
+            'cubic_capacity', 'last_renewal_from_bs',
+            'last_renewal_to_bs', 'has_third_party_insurance',
+            'unpaid_tax', 'unpaid_tax_fine', 'tax_current_year',
+            'tax_fine_current_year', 'renewal_charge', 'renewal_fine',
+            'model_tax', 'insurance_amount', 'service_charge',
+            'total_amount', 'full_name', 'contact_number', 'email',
+            'pick_location', 'city', 'vehicle_number',
+            'staff_notes', 'created_at',
+            'customer_name', 'customer_email',
+        ]
+        read_only_fields = ['id', 'created_at', 'status']
+
+
+class BlueBookRenewalCreateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = BlueBookRenewal
+        fields = [
+            'vehicle_type', 'manufacture_year', 'cubic_capacity',
+            'last_renewal_from_bs', 'last_renewal_to_bs',
+            'has_third_party_insurance', 'unpaid_tax', 'unpaid_tax_fine',
+            'tax_current_year', 'tax_fine_current_year', 'renewal_charge',
+            'renewal_fine', 'model_tax', 'insurance_amount',
+            'service_charge', 'total_amount', 'full_name',
+            'contact_number', 'email', 'pick_location',
+            'city', 'vehicle_number',
+        ]
+
+    def create(self, validated_data):
+        validated_data['customer'] = \
+            self.context['request'].user.customer
         return super().create(validated_data)

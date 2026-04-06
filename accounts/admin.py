@@ -1,6 +1,6 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
-from .models import User, Customer, Staff, Vehicle, ChargingStation, Charger,TimeSlot,ChargingBooking,ServiceCategory,Service,Mechanic,ServiceBooking,ServiceReport,CustomerFeedback
+from .models import User, Customer, Staff, Vehicle, ChargingStation, Charger,TimeSlot,ChargingBooking,ServiceCategory,Service,Mechanic,ServiceBooking,ServiceReport,BlueBookRenewal
 
 class UserAdmin(BaseUserAdmin):
     list_display = ['email', 'user_type', 'is_active', 'is_staff']
@@ -23,10 +23,9 @@ admin.site.register(Customer)
 admin.site.register(Staff)
 admin.site.register(ServiceCategory)
 admin.site.register(Service)
-admin.site.register(Mechanic)
 admin.site.register(ServiceBooking)
 admin.site.register(ServiceReport)
-admin.site.register(CustomerFeedback)
+
 
 @admin.register(Vehicle)
 class VehicleAdmin(admin.ModelAdmin):
@@ -72,3 +71,17 @@ class ChargingBookingAdmin(admin.ModelAdmin):
     def cancel_bookings(self, request, queryset):
         queryset.update(status='cancelled')
     cancel_bookings.short_description = "Cancel selected bookings"
+
+@admin.register(Mechanic)
+class MechanicAdmin(admin.ModelAdmin):
+    list_display = ['full_name', 'specialization', 'experience_years', 'is_available']
+    list_filter = ['is_available', 'specialization']
+    search_fields = ['full_name', 'specialization']
+    list_editable = ['is_available']
+
+@admin.register(BlueBookRenewal)
+class BlueBookRenewalAdmin(admin.ModelAdmin):
+    list_display = ['full_name', 'vehicle_number', 'vehicle_type', 'city', 'status', 'total_amount', 'created_at']
+    list_filter = ['status', 'vehicle_type', 'city']
+    search_fields = ['full_name', 'vehicle_number', 'contact_number']
+    list_editable = ['status'] 

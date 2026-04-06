@@ -32,9 +32,7 @@ urlpatterns = [
          service_views.cancel_service_booking,
          name='cancel-service-booking'),
 
-    path('bookings/<uuid:booking_id>/feedback/',
-         service_views.submit_feedback,
-         name='submit-feedback'),
+   
 
     path('bookings/<uuid:booking_id>/report/',
          service_views.get_service_report,
@@ -72,4 +70,21 @@ urlpatterns = [
     path('staff/statistics/',
          service_views.staff_get_service_statistics,
          name='staff-service-statistics'),
+
+     # ── Blue Book Renewal ──────────────────────────────────────────
+path('blue-book/create/',
+     service_views.create_blue_book_renewal,
+     name='create-blue-book'),
+
+path('blue-book/',
+     service_views.get_customer_blue_book_renewals,
+     name='customer-blue-book'),
+
+path('staff/blue-book/',
+     service_views.staff_get_all_blue_book_renewals,
+     name='staff-blue-book'),
+
+path('staff/blue-book/<uuid:renewal_id>/update-status/',
+     service_views.staff_update_blue_book_status,
+     name='staff-blue-book-update'),  
 ]

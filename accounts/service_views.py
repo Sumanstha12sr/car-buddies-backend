@@ -1,6 +1,3 @@
-# accounts/service_views.py
-# Complete views for Car Wash and EV Check services
-
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -8,13 +5,20 @@ from rest_framework.response import Response
 from django.shortcuts import get_object_or_404
 from .models import (
     ServiceCategory, Service, Mechanic,
-    ServiceBooking, ServiceReport, CustomerFeedback
+    ServiceBooking, ServiceReport, BlueBookRenewal
 )
 from .serializers import (
     ServiceCategorySerializer, ServiceSerializer, MechanicSerializer,
     ServiceBookingSerializer, ServiceBookingCreateSerializer,
-    ServiceReportSerializer, CustomerFeedbackSerializer
+    ServiceReportSerializer, BlueBookRenewalSerializer,
+    BlueBookRenewalCreateSerializer,
 )
+from .firebase_service import (
+    notify_staff_new_booking,
+    notify_customer_booking_update,
+    notify_all_customers_new_service,
+)
+from .notification_utils import notify_staff, notify_customer  # ← updated
 
 
 # ================================================================
@@ -24,11 +28,6 @@ from .serializers import (
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_service_categories(request):
-    """
-    Returns all active service categories with their services.
-    Customer uses this to see Car Wash and EV Check options.
-    GET /api/services/categories/
-    """
     categories = ServiceCategory.objects.filter(is_active=True)
     serializer = ServiceCategorySerializer(categories, many=True)
     return Response(serializer.data)
@@ -37,17 +36,7 @@ def get_service_categories(request):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_services_by_category(request, category_name):
-    """
-    Returns all active services under a category.
-    category_name: 'car_wash' or 'ev_check'
-    GET /api/services/category/car_wash/
-    GET /api/services/category/ev_check/
-    """
-    category = get_object_or_404(
-        ServiceCategory,
-        name=category_name,
-        is_active=True
-    )
+    category = get_object_or_404(ServiceCategory, name=category_name, is_active=True)
     services = category.services.filter(is_active=True)
     serializer = ServiceSerializer(services, many=True)
     return Response(serializer.data)
@@ -56,83 +45,94 @@ def get_services_by_category(request, category_name):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def create_service_booking(request):
-    """
-    Customer creates a new service booking.
-    POST /api/services/bookings/create/
-    Body: {
-        "service": "<uuid>",
-        "vehicle": "<uuid>",
-        "booking_date": "2026-03-15",
-        "preferred_time": "10:00:00",
-        "notes": "optional notes"
-    }
-    """
     serializer = ServiceBookingCreateSerializer(
         data=request.data,
         context={'request': request}
     )
     if serializer.is_valid():
         booking = serializer.save()
+
+        # ── Notify staff of new booking (Firebase push) ────────
+        try:
+            notify_staff_new_booking(booking)
+        except Exception:
+            pass
+
+        # ── Notify staff (in-app + FCM via notification_utils) ─
+        # Determine type from the service category name
+        try:
+            category_name = booking.service.category.name  # e.g. 'car_wash' or 'ev_check'
+
+            if category_name == 'car_wash':
+                notify_staff(
+                    notification_type='carwash_booking',
+                    title='🚿 New Car Wash Booking',
+                    body=(
+                        f'{request.user.get_full_name() or request.user.email} '
+                        f'booked a car wash for '
+                        f'{booking.booking_date.strftime("%d %b %Y")}.'
+                    ),
+                    extra_data={'booking_id': str(booking.id)},
+                )
+            elif category_name == 'ev_check':
+                notify_staff(
+                    notification_type='ev_checkup_booking',
+                    title='🔍 New EV Checkup Booking',
+                    body=(
+                        f'{request.user.get_full_name() or request.user.email} '
+                        f'booked an EV health checkup for '
+                        f'{booking.booking_date.strftime("%d %b %Y")}.'
+                    ),
+                    extra_data={'booking_id': str(booking.id)},
+                )
+        except Exception:
+            pass
+
         return Response(
             ServiceBookingSerializer(booking).data,
             status=status.HTTP_201_CREATED
         )
+
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+
+import traceback
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_customer_service_bookings(request):
-    """
-    Returns all service bookings for the logged-in customer.
-    Optional filter: ?category=car_wash or ?category=ev_check
-    GET /api/services/bookings/
-    GET /api/services/bookings/?category=car_wash
-    GET /api/services/bookings/?category=ev_check
-    """
     try:
         customer = request.user.customer
     except Exception:
-        return Response(
-            {'error': 'Customer profile not found'},
-            status=status.HTTP_404_NOT_FOUND
-        )
+        return Response({'error': 'Customer profile not found'}, status=status.HTTP_404_NOT_FOUND)
 
     bookings = ServiceBooking.objects.filter(
         customer=customer
     ).select_related(
-        'service', 'service__category',
-        'vehicle', 'assigned_mechanic',
-        'assigned_mechanic__staff'
-    ).prefetch_related('report', 'feedback')
+        'service', 'service__category', 'vehicle', 'assigned_mechanic',
+    ).prefetch_related('report',) 
 
-    # Filter by category if provided
     category = request.query_params.get('category')
     if category:
         bookings = bookings.filter(service__category__name=category)
 
-    serializer = ServiceBookingSerializer(bookings, many=True)
-    return Response(serializer.data)
+    try:
+        serializer = ServiceBookingSerializer(bookings, many=True)
+        data = serializer.data
+        return Response(data)
+    except Exception as e:
+        traceback.print_exc()  # ← prints full error to terminal
+        return Response({'error': str(e)}, status=500)
 
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_service_booking_detail(request, booking_id):
-    """
-    Returns details of a specific service booking.
-    GET /api/services/bookings/<booking_id>/
-    """
     try:
         customer = request.user.customer
-        booking = ServiceBooking.objects.get(
-            id=booking_id,
-            customer=customer
-        )
+        booking = ServiceBooking.objects.get(id=booking_id, customer=customer)
     except ServiceBooking.DoesNotExist:
-        return Response(
-            {'error': 'Booking not found'},
-            status=status.HTTP_404_NOT_FOUND
-        )
+        return Response({'error': 'Booking not found'}, status=status.HTTP_404_NOT_FOUND)
 
     serializer = ServiceBookingSerializer(booking)
     return Response(serializer.data)
@@ -141,22 +141,11 @@ def get_service_booking_detail(request, booking_id):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def cancel_service_booking(request, booking_id):
-    """
-    Customer cancels their booking.
-    Only allowed if status is pending or confirmed.
-    POST /api/services/bookings/<booking_id>/cancel/
-    """
     try:
         customer = request.user.customer
-        booking = ServiceBooking.objects.get(
-            id=booking_id,
-            customer=customer
-        )
+        booking = ServiceBooking.objects.get(id=booking_id, customer=customer)
     except ServiceBooking.DoesNotExist:
-        return Response(
-            {'error': 'Booking not found'},
-            status=status.HTTP_404_NOT_FOUND
-        )
+        return Response({'error': 'Booking not found'}, status=status.HTTP_404_NOT_FOUND)
 
     if booking.status not in ['pending', 'confirmed']:
         return Response(
@@ -167,71 +156,32 @@ def cancel_service_booking(request, booking_id):
     booking.status = 'cancelled'
     booking.save()
 
-    return Response({'message': 'Booking cancelled successfully'})
-
-
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def submit_feedback(request, booking_id):
-    """
-    Customer submits feedback after service completion.
-    POST /api/services/bookings/<booking_id>/feedback/
-    Body: { "rating": 5, "comment": "Great service!" }
-    """
+    # ── Notify staff that customer cancelled ──────────────────
     try:
-        customer = request.user.customer
-        booking = ServiceBooking.objects.get(
-            id=booking_id,
-            customer=customer
+        notify_staff(
+            notification_type='booking_cancelled',
+            title='❌ Service Booking Cancelled',
+            body=(
+                f'{request.user.get_full_name() or request.user.email} '
+                f'cancelled their {booking.service.name} booking for '
+                f'{booking.booking_date.strftime("%d %b %Y")}.'
+            ),
+            extra_data={'booking_id': str(booking.id)},
         )
-    except ServiceBooking.DoesNotExist:
-        return Response(
-            {'error': 'Booking not found'},
-            status=status.HTTP_404_NOT_FOUND
-        )
+    except Exception:
+        pass
 
-    if booking.status != 'completed':
-        return Response(
-            {'error': 'You can only give feedback after service is completed'},
-            status=status.HTTP_400_BAD_REQUEST
-        )
-
-    # Check feedback not already submitted
-    if hasattr(booking, 'feedback'):
-        return Response(
-            {'error': 'Feedback already submitted for this booking'},
-            status=status.HTTP_400_BAD_REQUEST
-        )
-
-    serializer = CustomerFeedbackSerializer(data=request.data)
-    if serializer.is_valid():
-        serializer.save(booking=booking)
-        return Response(
-            {'message': 'Feedback submitted successfully!',
-             'data': serializer.data},
-            status=status.HTTP_201_CREATED
-        )
-    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    return Response({'message': 'Booking cancelled successfully'})
 
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_service_report(request, booking_id):
-    """
-    Customer views their vehicle health report after EV Check.
-    GET /api/services/bookings/<booking_id>/report/
-    """
     try:
         customer = request.user.customer
-        booking = ServiceBooking.objects.get(
-            id=booking_id,
-            customer=customer
-        )
+        booking = ServiceBooking.objects.get(id=booking_id, customer=customer)
     except ServiceBooking.DoesNotExist:
-        return Response(
-            {'error': 'Booking not found'},
-            status=status.HTTP_404_NOT_FOUND
-        )
+        return Response({'error': 'Booking not found'}, status=status.HTTP_404_NOT_FOUND)
 
     if not hasattr(booking, 'report'):
         return Response(
@@ -250,26 +200,16 @@ def get_service_report(request, booking_id):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def staff_get_all_service_bookings(request):
-    """
-    Staff views all service bookings.
-    Optional filters:
-      ?category=car_wash or ?category=ev_check
-      ?status=pending
-    GET /api/services/staff/bookings/
-    """
     bookings = ServiceBooking.objects.all().select_related(
         'service', 'service__category',
         'customer', 'customer__user',
         'vehicle',
-        'assigned_mechanic', 'assigned_mechanic__staff'
-    ).prefetch_related('report', 'feedback')
+    ).prefetch_related('report',)
 
-    # Filter by category
     category = request.query_params.get('category')
     if category:
         bookings = bookings.filter(service__category__name=category)
 
-    # Filter by status
     booking_status = request.query_params.get('status')
     if booking_status:
         bookings = bookings.filter(status=booking_status)
@@ -281,25 +221,13 @@ def staff_get_all_service_bookings(request):
 @api_view(['PATCH'])
 @permission_classes([IsAuthenticated])
 def staff_update_service_booking_status(request, booking_id):
-    """
-    Staff updates booking status.
-    PATCH /api/services/staff/bookings/<booking_id>/update-status/
-    Body: { "status": "confirmed", "staff_notes": "optional" }
-
-    Status flow:
-    pending → confirmed → in_progress → completed
-    pending/confirmed → cancelled
-    """
     booking = get_object_or_404(ServiceBooking, id=booking_id)
 
     new_status = request.data.get('status')
     valid_statuses = ['pending', 'confirmed', 'in_progress', 'completed', 'cancelled']
 
     if not new_status:
-        return Response(
-            {'error': 'Status is required'},
-            status=status.HTTP_400_BAD_REQUEST
-        )
+        return Response({'error': 'Status is required'}, status=status.HTTP_400_BAD_REQUEST)
 
     if new_status not in valid_statuses:
         return Response(
@@ -307,10 +235,42 @@ def staff_update_service_booking_status(request, booking_id):
             status=status.HTTP_400_BAD_REQUEST
         )
 
+    # ── Guard: mechanic must be assigned before confirming ─────
+    if new_status == 'confirmed' and booking.assigned_mechanic is None:
+        return Response(
+            {'error': 'Please assign a mechanic before confirming this booking.'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
     booking.status = new_status
     if request.data.get('staff_notes'):
         booking.staff_notes = request.data.get('staff_notes')
     booking.save()
+
+    # ── FIXED: Prevent double notification on staff cancel ─────────────
+    # notify_customer_booking_update() creates BOTH FCM push AND a DB record
+    # with "Auto-Cancelled" wording. Skip it for cancelled; use notify_customer() only.
+    if new_status != 'cancelled':
+        try:
+            notify_customer_booking_update(booking, new_status)
+        except Exception:
+            pass
+
+    # For cancelled by staff: send single correct DB notification
+    if new_status == 'cancelled':
+        try:
+            notify_customer(
+                user=booking.customer.user,
+                notification_type='booking_cancelled',
+                title='❌ Booking Cancelled by Staff',
+                body=(
+                    f'Your {booking.service.name} booking on '
+                    f'{booking.booking_date.strftime("%d %b %Y")} '
+                    f'has been cancelled by our staff.'
+                ),
+            )
+        except Exception:
+            pass
 
     return Response(
         ServiceBookingSerializer(booking).data,
@@ -321,56 +281,27 @@ def staff_update_service_booking_status(request, booking_id):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def staff_assign_mechanic(request, booking_id):
-    """
-    Staff assigns a mechanic to an EV Check booking.
-    POST /api/services/staff/bookings/<booking_id>/assign-mechanic/
-    Body: { "mechanic_id": "<uuid>" }
-    """
     booking = get_object_or_404(ServiceBooking, id=booking_id)
-
-    # Only for EV Check bookings
-    if booking.service.category.name != 'ev_check':
-        return Response(
-            {'error': 'Mechanic assignment is only for EV Check bookings'},
-            status=status.HTTP_400_BAD_REQUEST
-        )
 
     mechanic_id = request.data.get('mechanic_id')
     if not mechanic_id:
-        return Response(
-            {'error': 'mechanic_id is required'},
-            status=status.HTTP_400_BAD_REQUEST
-        )
+        return Response({'error': 'mechanic_id is required'}, status=status.HTTP_400_BAD_REQUEST)
 
     mechanic = get_object_or_404(Mechanic, id=mechanic_id)
 
     if not mechanic.is_available:
-        return Response(
-            {'error': 'This mechanic is not available'},
-            status=status.HTTP_400_BAD_REQUEST
-        )
+        return Response({'error': 'This mechanic is not available'}, status=status.HTTP_400_BAD_REQUEST)
 
     booking.assigned_mechanic = mechanic
-    booking.status = 'confirmed'
     booking.save()
 
-    return Response(
-        ServiceBookingSerializer(booking).data,
-        status=status.HTTP_200_OK
-    )
+    return Response(ServiceBookingSerializer(booking).data, status=status.HTTP_200_OK)
 
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def staff_get_available_mechanics(request):
-    """
-    Staff gets list of available mechanics for assignment.
-    GET /api/services/staff/mechanics/
-    """
-    mechanics = Mechanic.objects.filter(
-        is_available=True
-    ).select_related('staff', 'staff__user')
-
+    mechanics = Mechanic.objects.filter(is_available=True)
     serializer = MechanicSerializer(mechanics, many=True)
     return Response(serializer.data)
 
@@ -378,41 +309,28 @@ def staff_get_available_mechanics(request):
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def staff_create_service_report(request, booking_id):
-    """
-    Staff creates a vehicle health report after EV Check.
-    POST /api/services/staff/bookings/<booking_id>/report/
-    Body: {
-        "issues_found": "Battery at 72%...",
-        "recommendations": "Check coolant...",
-        "overall_condition": "good",
-        "battery_health": 72
-    }
-    """
     booking = get_object_or_404(ServiceBooking, id=booking_id)
 
-    # Only for EV Check bookings
     if booking.service.category.name != 'ev_check':
-        return Response(
-            {'error': 'Reports are only for EV Check bookings'},
-            status=status.HTTP_400_BAD_REQUEST
-        )
+        return Response({'error': 'Reports are only for EV Check bookings'}, status=status.HTTP_400_BAD_REQUEST)
 
-    # Check report doesn't already exist
     if hasattr(booking, 'report'):
-        return Response(
-            {'error': 'Report already exists for this booking'},
-            status=status.HTTP_400_BAD_REQUEST
-        )
+        return Response({'error': 'Report already exists for this booking'}, status=status.HTTP_400_BAD_REQUEST)
 
     serializer = ServiceReportSerializer(data=request.data)
     if serializer.is_valid():
         serializer.save(booking=booking)
-        # Auto mark booking as completed
         booking.status = 'completed'
         booking.save()
+
+        # ── Notify customer report is ready ───────────────────
+        try:
+            notify_customer_booking_update(booking, 'completed')
+        except Exception:
+            pass
+
         return Response(
-            {'message': 'Report created successfully!',
-             'data': serializer.data},
+            {'message': 'Report created successfully!', 'data': serializer.data},
             status=status.HTTP_201_CREATED
         )
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -421,10 +339,6 @@ def staff_create_service_report(request, booking_id):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def staff_get_service_statistics(request):
-    """
-    Staff dashboard statistics for services.
-    GET /api/services/staff/statistics/
-    """
     from django.utils import timezone
     today = timezone.now().date()
 
@@ -434,12 +348,8 @@ def staff_get_service_statistics(request):
     in_progress = ServiceBooking.objects.filter(status='in_progress').count()
     completed = ServiceBooking.objects.filter(status='completed').count()
     today_bookings = ServiceBooking.objects.filter(booking_date=today).count()
-    car_wash = ServiceBooking.objects.filter(
-        service__category__name='car_wash'
-    ).count()
-    ev_check = ServiceBooking.objects.filter(
-        service__category__name='ev_check'
-    ).count()
+    car_wash = ServiceBooking.objects.filter(service__category__name='car_wash').count()
+    ev_check = ServiceBooking.objects.filter(service__category__name='ev_check').count()
 
     return Response({
         'total': total,
@@ -456,50 +366,26 @@ def staff_get_service_statistics(request):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_vehicle_booked_slots(request, vehicle_id):
-    """
-    Returns all booked time slots for a vehicle on a given date.
-    Checks BOTH charging bookings AND service bookings.
-
-    GET /api/services/vehicle/<vehicle_id>/booked-slots/?date=2026-03-20
-
-    Response:
-    {
-        "booked_hours": [9, 10, 14],   # list of booked hours (0-23)
-        "date": "2026-03-20"
-    }
-    """
     from .models import Vehicle, ChargingBooking
     from django.utils.dateparse import parse_date
 
     date_str = request.query_params.get('date')
     if not date_str:
-        return Response(
-            {'error': 'date parameter is required (format: YYYY-MM-DD)'},
-            status=status.HTTP_400_BAD_REQUEST
-        )
+        return Response({'error': 'date parameter is required'}, status=status.HTTP_400_BAD_REQUEST)
 
     booking_date = parse_date(date_str)
     if not booking_date:
-        return Response(
-            {'error': 'Invalid date format. Use YYYY-MM-DD'},
-            status=status.HTTP_400_BAD_REQUEST
-        )
+        return Response({'error': 'Invalid date format. Use YYYY-MM-DD'}, status=status.HTTP_400_BAD_REQUEST)
 
-    # Verify vehicle exists and belongs to this customer
     try:
         vehicle = Vehicle.objects.get(id=vehicle_id)
     except Vehicle.DoesNotExist:
-        return Response(
-            {'error': 'Vehicle not found'},
-            status=status.HTTP_404_NOT_FOUND
-        )
+        return Response({'error': 'Vehicle not found'}, status=status.HTTP_404_NOT_FOUND)
 
     booked_hours = set()
 
-    # 1. Check service bookings (car wash / ev check)
     service_bookings = ServiceBooking.objects.filter(
-        vehicle=vehicle,
-        booking_date=booking_date,
+        vehicle=vehicle, booking_date=booking_date,
         status__in=['pending', 'confirmed', 'in_progress']
     )
     for booking in service_bookings:
@@ -510,10 +396,8 @@ def get_vehicle_booked_slots(request, vehicle_id):
             except (ValueError, IndexError):
                 pass
 
-    # 2. Check charging bookings
     charging_bookings = ChargingBooking.objects.filter(
-        vehicle=vehicle,
-        booking_date=booking_date,
+        vehicle=vehicle, booking_date=booking_date,
         status__in=['pending', 'confirmed', 'in_progress']
     )
     for booking in charging_bookings:
@@ -534,35 +418,6 @@ def get_vehicle_booked_slots(request, vehicle_id):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_customer_analytics(request):
-    """
-    Returns analytics data for the logged-in customer.
-
-    GET /api/services/customer/analytics/
-
-    Response:
-    {
-        "total_spent": 5200.00,
-        "spent_by_category": {
-            "charging": 2000.00,
-            "car_wash": 1500.00,
-            "ev_check": 1700.00
-        },
-        "bookings_by_service": [
-            {"name": "Full Wash", "count": 3, "total": 1500.00},
-            ...
-        ],
-        "monthly_trend": [
-            {"month": "Jan 2026", "amount": 800.00},
-            ...
-        ],
-        "most_visited_station": {
-            "name": "Bhaktapur Central EV Hub",
-            "count": 4
-        },
-        "total_bookings": 12,
-        "completed_bookings": 9
-    }
-    """
     from .models import ChargingBooking, ChargingStation
     from django.db.models import Sum, Count
     from django.utils import timezone
@@ -572,45 +427,27 @@ def get_customer_analytics(request):
     try:
         customer = request.user.customer
     except Exception:
-        return Response(
-            {'error': 'Customer profile not found'},
-            status=status.HTTP_404_NOT_FOUND
-        )
+        return Response({'error': 'Customer profile not found'}, status=status.HTTP_404_NOT_FOUND)
 
-    # ── Service Bookings (completed only for spending) ──────────
     completed_services = ServiceBooking.objects.filter(
-        customer=customer,
-        status='completed'
+        customer=customer, status='completed'
     ).select_related('service', 'service__category')
 
-    # ── Charging Bookings (completed only) ──────────────────────
     completed_charging = ChargingBooking.objects.filter(
-        customer=customer,
-        status='completed'
+        customer=customer, status='completed'
     ).select_related('charger__station')
 
-    # ── Total spent ─────────────────────────────────────────────
-    service_spent = sum(
-        float(b.estimated_cost or b.service.price)
-        for b in completed_services
-    )
-    charging_spent = sum(
-        float(b.estimated_cost or 0)
-        for b in completed_charging
-        if b.estimated_cost
-    )
+    service_spent = sum(float(b.estimated_cost or b.service.price) for b in completed_services)
+    charging_spent = sum(float(b.estimated_cost or 0) for b in completed_charging if b.estimated_cost)
     total_spent = service_spent + charging_spent
 
-    # ── Spent by category ───────────────────────────────────────
     car_wash_spent = sum(
         float(b.estimated_cost or b.service.price)
-        for b in completed_services
-        if b.service.category.name == 'car_wash'
+        for b in completed_services if b.service.category.name == 'car_wash'
     )
     ev_check_spent = sum(
         float(b.estimated_cost or b.service.price)
-        for b in completed_services
-        if b.service.category.name == 'ev_check'
+        for b in completed_services if b.service.category.name == 'ev_check'
     )
 
     spent_by_category = {
@@ -619,27 +456,18 @@ def get_customer_analytics(request):
         'ev_check': round(ev_check_spent, 2),
     }
 
-    # ── Bookings by service ──────────────────────────────────────
     service_counts = defaultdict(lambda: {'count': 0, 'total': 0.0})
     for b in completed_services:
         name = b.service.name
         service_counts[name]['count'] += 1
-        service_counts[name]['total'] += float(
-            b.estimated_cost or b.service.price
-        )
+        service_counts[name]['total'] += float(b.estimated_cost or b.service.price)
 
     bookings_by_service = [
-        {
-            'name': name,
-            'count': data['count'],
-            'total': round(data['total'], 2),
-        }
+        {'name': name, 'count': data['count'], 'total': round(data['total'], 2)}
         for name, data in service_counts.items()
     ]
-    # Sort by count descending
     bookings_by_service.sort(key=lambda x: x['count'], reverse=True)
 
-    # ── Monthly trend (last 6 months) ───────────────────────────
     today = timezone.now().date()
     monthly = defaultdict(float)
 
@@ -652,52 +480,31 @@ def get_customer_analytics(request):
             key = b.booking_date.strftime('%b %Y')
             monthly[key] += float(b.estimated_cost)
 
-    # Build last 6 months in order
     monthly_trend = []
     for i in range(5, -1, -1):
-        # Go back i months from today
         month = today.month - i
         year = today.year
         while month <= 0:
             month += 12
             year -= 1
         key = f"{calendar.month_abbr[month]} {year}"
-        monthly_trend.append({
-            'month': key,
-            'amount': round(monthly.get(key, 0.0), 2),
-        })
+        monthly_trend.append({'month': key, 'amount': round(monthly.get(key, 0.0), 2)})
 
-    # ── Most visited station ─────────────────────────────────────
-    all_charging = ChargingBooking.objects.filter(
-        customer=customer
-    ).select_related('charger__station')
-
+    all_charging = ChargingBooking.objects.filter(customer=customer).select_related('charger__station')
     station_counts = defaultdict(int)
     for b in all_charging:
         try:
-            name = b.charger.station.name
-            station_counts[name] += 1
+            station_counts[b.charger.station.name] += 1
         except Exception:
             pass
 
     most_visited_station = None
     if station_counts:
         top_station = max(station_counts, key=station_counts.get)
-        most_visited_station = {
-            'name': top_station,
-            'count': station_counts[top_station],
-        }
+        most_visited_station = {'name': top_station, 'count': station_counts[top_station]}
 
-    # ── Total booking counts ─────────────────────────────────────
-    total_service_bookings = ServiceBooking.objects.filter(
-        customer=customer
-    ).count()
-    total_charging_bookings = ChargingBooking.objects.filter(
-        customer=customer
-    ).count()
-
-    completed_service_count = completed_services.count()
-    completed_charging_count = completed_charging.count()
+    total_service_bookings = ServiceBooking.objects.filter(customer=customer).count()
+    total_charging_bookings = ChargingBooking.objects.filter(customer=customer).count()
 
     return Response({
         'total_spent': round(total_spent, 2),
@@ -706,5 +513,82 @@ def get_customer_analytics(request):
         'monthly_trend': monthly_trend,
         'most_visited_station': most_visited_station,
         'total_bookings': total_service_bookings + total_charging_bookings,
-        'completed_bookings': completed_service_count + completed_charging_count,
+        'completed_bookings': completed_services.count() + completed_charging.count(),
     })
+
+
+# ==================== BLUE BOOK RENEWAL ====================
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def create_blue_book_renewal(request):
+    serializer = BlueBookRenewalCreateSerializer(
+        data=request.data, context={'request': request}
+    )
+    if serializer.is_valid():
+        renewal = serializer.save()
+
+        # ── Notify staff of new blue book submission ───────────
+        try:
+            notify_staff(
+                notification_type='bluebook_submission',
+                title='📋 New Blue Book Renewal',
+                body=(
+                    f'{request.user.get_full_name() or request.user.email} '
+                    f'submitted a blue book renewal for a '
+                    f'{renewal.vehicle_type.replace("_", " ").title()}.'
+                ),
+                extra_data={'renewal_id': str(renewal.id)},
+            )
+        except Exception:
+            pass
+
+        return Response(BlueBookRenewalSerializer(renewal).data, status=status.HTTP_201_CREATED)
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def get_customer_blue_book_renewals(request):
+    try:
+        customer = request.user.customer
+    except Exception:
+        return Response({'error': 'Customer profile not found'}, status=status.HTTP_404_NOT_FOUND)
+    renewals = BlueBookRenewal.objects.filter(customer=customer)
+    serializer = BlueBookRenewalSerializer(renewals, many=True)
+    return Response(serializer.data)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def staff_get_all_blue_book_renewals(request):
+    renewals = BlueBookRenewal.objects.all().select_related('customer', 'customer__user')
+    status_filter = request.query_params.get('status')
+    if status_filter:
+        renewals = renewals.filter(status=status_filter)
+    serializer = BlueBookRenewalSerializer(renewals, many=True)
+    return Response(serializer.data)
+
+
+@api_view(['PATCH'])
+@permission_classes([IsAuthenticated])
+def staff_update_blue_book_status(request, renewal_id):
+    try:
+        renewal = BlueBookRenewal.objects.get(id=renewal_id)
+    except BlueBookRenewal.DoesNotExist:
+        return Response({'error': 'Renewal not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    new_status = request.data.get('status')
+    valid_statuses = ['submitted', 'under_review', 'completed', 'rejected']
+    if new_status not in valid_statuses:
+        return Response(
+            {'error': f'Invalid status. Choose from: {valid_statuses}'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    renewal.status = new_status
+    if request.data.get('staff_notes'):
+        renewal.staff_notes = request.data.get('staff_notes')
+    renewal.save()
+
+    return Response(BlueBookRenewalSerializer(renewal).data, status=status.HTTP_200_OK)

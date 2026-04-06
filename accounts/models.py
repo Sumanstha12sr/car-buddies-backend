@@ -1,3 +1,5 @@
+from django.utils import timezone
+
 from django.db import models
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
 from django.core.validators import MinValueValidator, MaxValueValidator
@@ -286,23 +288,22 @@ class Service(models.Model):
 class Mechanic(models.Model):
     """
     Mechanics for EV Check service.
-    Each mechanic is linked to a Staff member.
+    Standalone — no User or Staff account needed.
+    Admin adds mechanics directly from Django admin panel.
+    They receive tasks physically from staff.
     """
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    staff = models.OneToOneField(
-        Staff,
-        on_delete=models.CASCADE,
-        related_name='mechanic_profile'
-    )
+    full_name = models.CharField(max_length=255)
     specialization = models.CharField(
         max_length=200,
         help_text='e.g. Battery, Motor, General EV'
     )
     experience_years = models.IntegerField(default=0)
     is_available = models.BooleanField(default=True)
+    created_at = models.DateTimeField(default=timezone.now)
 
     def __str__(self):
-        return f'{self.staff.full_name} — {self.specialization}'
+        return f'{self.full_name} — {self.specialization}'
 
 
 class ServiceBooking(models.Model):
@@ -415,24 +416,143 @@ class ServiceReport(models.Model):
     def __str__(self):
         return f'Report — {self.booking} — {self.overall_condition}'
 
+class BlueBookRenewal(models.Model):
+    """
+    Customer submits blue book renewal application.
+    Staff reviews and contacts customer.
+    """
+    VEHICLE_TYPE_CHOICES = (
+        ('two_wheeler', 'Two Wheeler'),
+        ('two_wheeler_ev', 'Two Wheeler EV'),
+        ('four_wheeler', 'Four Wheeler'),
+        ('four_wheeler_ev', 'Four Wheeler EV'),
+    )
 
-class CustomerFeedback(models.Model):
-    """
-    Customer feedback after service completion.
-    Staff notifies customer to give feedback.
-    """
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    booking = models.OneToOneField(
-        ServiceBooking,
+    STATUS_CHOICES = (
+        ('submitted', 'Submitted'),
+        ('under_review', 'Under Review'),
+        ('completed', 'Completed'),
+        ('rejected', 'Rejected'),
+    )
+
+    CITY_CHOICES = (
+        ('kathmandu', 'Kathmandu'),
+        ('lalitpur', 'Lalitpur'),
+        ('bhaktapur', 'Bhaktapur'),
+    )
+
+    id = models.UUIDField(
+        primary_key=True, default=uuid.uuid4, editable=False)
+    customer = models.ForeignKey(
+        Customer,
         on_delete=models.CASCADE,
-        related_name='feedback'
+        related_name='blue_book_renewals'
     )
-    rating = models.IntegerField(
-        help_text='Rating from 1 to 5',
-        default=5
-    )
-    comment = models.TextField(blank=True)
+
+    # ── Vehicle info from calculation form ──────────────────────
+    vehicle_type = models.CharField(
+        max_length=20, choices=VEHICLE_TYPE_CHOICES)
+    manufacture_year = models.IntegerField(
+        help_text='Year of manufacture in AD')
+    cubic_capacity = models.IntegerField(
+        help_text='Engine CC (0 for EV)', default=0)
+    last_renewal_from_bs = models.CharField(
+        max_length=20, help_text='BS date e.g. 2079-01-01')
+    last_renewal_to_bs = models.CharField(
+        max_length=20, help_text='BS date e.g. 2080-01-01')
+    has_third_party_insurance = models.BooleanField(default=False)
+
+    # ── Calculated charges ───────────────────────────────────────
+    unpaid_tax = models.DecimalField(
+        max_digits=10, decimal_places=2, default=0)
+    unpaid_tax_fine = models.DecimalField(
+        max_digits=10, decimal_places=2, default=0)
+    tax_current_year = models.DecimalField(
+        max_digits=10, decimal_places=2, default=0)
+    tax_fine_current_year = models.DecimalField(
+        max_digits=10, decimal_places=2, default=0)
+    renewal_charge = models.DecimalField(
+        max_digits=10, decimal_places=2, default=300)
+    renewal_fine = models.DecimalField(
+        max_digits=10, decimal_places=2, default=0)
+    model_tax = models.DecimalField(
+        max_digits=10, decimal_places=2, default=0)
+    insurance_amount = models.DecimalField(
+        max_digits=10, decimal_places=2, default=0)
+    service_charge = models.DecimalField(
+        max_digits=10, decimal_places=2, default=200)
+    total_amount = models.DecimalField(
+        max_digits=10, decimal_places=2, default=0)
+
+    # ── Customer contact details ─────────────────────────────────
+    full_name = models.CharField(max_length=255)
+    contact_number = models.CharField(max_length=15)
+    email = models.EmailField()
+    pick_location = models.TextField()
+    city = models.CharField(max_length=20, choices=CITY_CHOICES)
+    vehicle_number = models.CharField(max_length=20)
+
+    # ── Status ───────────────────────────────────────────────────
+    status = models.CharField(
+        max_length=20, choices=STATUS_CHOICES, default='submitted')
+    staff_notes = models.TextField(blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
 
     def __str__(self):
-        return f'Feedback — {self.booking.customer.full_name} — {self.rating}/5'
+        return f'BlueBook — {self.full_name} — {self.vehicle_number} — {self.status}'
+
+# Notification Models FireBase
+class FCMToken(models.Model):
+    """Stores FCM device tokens for push notifications."""
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='fcm_tokens'
+    )
+    token = models.TextField()
+    created_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = ['user', 'token']
+
+    def __str__(self):
+        return f'{self.user.email} — token'
+
+
+class Notification(models.Model):
+    """Stores notifications for both staff and customers."""
+    NOTIFICATION_TYPE_CHOICES = (
+        ('booking_request', 'New Booking Request'),
+        ('booking_confirmed', 'Booking Confirmed'),
+        ('booking_completed', 'Booking Completed'),
+        ('booking_cancelled', 'Booking Cancelled'),
+        ('booking_rejected', 'Booking Rejected'),
+        ('new_service', 'New Service Added'),
+    )
+
+    id = models.UUIDField(
+        primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='notifications'
+    )
+    title = models.CharField(max_length=255)
+    body = models.TextField()
+    notification_type = models.CharField(
+        max_length=30,
+        choices=NOTIFICATION_TYPE_CHOICES
+    )
+    is_read = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'{self.user.email} — {self.title}'

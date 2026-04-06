@@ -15,4 +15,7 @@ __pycache__/
 media/
 
 # Windows
-Thumbs.db 
+Thumbs.db
+
+# Firebase
+accounts/firebase-service-account.json

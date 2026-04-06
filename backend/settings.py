@@ -10,6 +10,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 SECRET_KEY = config('SECRET_KEY', default='my-current-key')
 DEBUG = os.environ.get('DEBUG', 'False') == 'True'
+FIREBASE_CREDENTIALS_PATH = '/path/to/serviceAccountKey.json'
 
 ALLOWED_HOSTS = ['*']
 
