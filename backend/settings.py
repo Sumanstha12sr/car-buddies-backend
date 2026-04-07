@@ -8,10 +8,9 @@ load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-SECRET_KEY = config('SECRET_KEY', default='my-current-key')
+SECRET_KEY = os.getenv("SECRET_KEY")
 DEBUG = os.environ.get('DEBUG', 'False') == 'True'
 FIREBASE_CREDENTIALS_PATH = '/path/to/serviceAccountKey.json'
-#EMAIL_HOST_PASSWORD= 'tanzrzmdsanyvjeu'
 ALLOWED_HOSTS = ['*']
 
 INSTALLED_APPS = [
@@ -92,7 +91,7 @@ else:
             'ENGINE': 'django.db.backends.postgresql',
             'NAME': 'car_buddies_db',
             'USER': 'postgres',
-            'PASSWORD': 'admin',
+            'PASSWORD': os.getenv("DB_PASSWORD"),
             'HOST': 'localhost',
             'PORT': '5432',
         }
@@ -142,12 +141,10 @@ LOGGING = {
 
 
 # Email Configuration
-EMAIL_BACKEND       = 'django.core.mail.backends.smtp.EmailBackend'
-EMAIL_HOST          = 'smtp.gmail.com'
-EMAIL_PORT          = 587
-EMAIL_USE_TLS       = True
-EMAIL_HOST_USER     = 'suman4.shrestha@gmail.com'        
-EMAIL_HOST_PASSWORD = 'tanzrzmdsanyvjeu'            
-DEFAULT_FROM_EMAIL  = 'Car Buddies <suman4.shrestha@gmail.com>'
-
-BACKEND_URL = 'https://obeyingly-flamy-humberto.ngrok-free.dev'  
+EMAIL_BACKEND = os.getenv("EMAIL_BACKEND")
+EMAIL_HOST = os.getenv("EMAIL_HOST")
+EMAIL_PORT = int(os.getenv("EMAIL_PORT", 587))
+EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS", "True") == "True"
+EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER")
+EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD")
+DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL")

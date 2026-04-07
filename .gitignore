@@ -19,3 +19,5 @@ Thumbs.db
 
 # Firebase
 accounts/firebase-service-account.json
+# Added by ggshield
+.cache_ggshield
