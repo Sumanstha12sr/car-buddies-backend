@@ -1,6 +1,11 @@
+import uuid as uuid_lib
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
-from .models import BlueBookRenewal, Customer, Staff, Vehicle, ChargingStation, Charger, TimeSlot, ChargingBooking, ServiceCategory, Service, Mechanic, ServiceBooking, ServiceReport
+from .models import (
+    BlueBookRenewal, Customer, Staff, Vehicle,
+    ChargingStation, Charger, TimeSlot, ChargingBooking,
+    ServiceCategory, Service, Mechanic, ServiceBooking, ServiceReport,
+)
 
 User = get_user_model()
 
@@ -8,11 +13,11 @@ User = get_user_model()
 # ==================== AUTH SERIALIZERS ====================
 
 class CustomerRegistrationSerializer(serializers.Serializer):
-    email = serializers.EmailField()
-    full_name = serializers.CharField(max_length=255)
-    password = serializers.CharField(write_only=True, min_length=8)
+    email            = serializers.EmailField()
+    full_name        = serializers.CharField(max_length=255)
+    password         = serializers.CharField(write_only=True, min_length=8)
     confirm_password = serializers.CharField(write_only=True)
-    phone_number = serializers.CharField(required=False, allow_blank=True)
+    phone_number     = serializers.CharField(required=False, allow_blank=True)
 
     def validate(self, data):
         if data['password'] != data['confirm_password']:
@@ -27,51 +32,61 @@ class CustomerRegistrationSerializer(serializers.Serializer):
 
     def create(self, validated_data):
         validated_data.pop('confirm_password')
-        phone = validated_data.pop('phone_number', '')
+        phone     = validated_data.pop('phone_number', '')
         full_name = validated_data.pop('full_name')
 
+        # ── FIXED: is_active=False until email is verified ────────────
         user = User.objects.create_user(
             email=validated_data['email'],
             password=validated_data['password'],
             user_type='customer',
-            is_active=True,
+            is_active=False,  # must verify email before login
         )
+
+        # ── Generate unique verification token ────────────────────────
+        token = str(uuid_lib.uuid4())
 
         Customer.objects.create(
             user=user,
             full_name=full_name,
             phone=phone,
+            email_verification_token=token,
         )
 
         return user
 
 
 class LoginSerializer(serializers.Serializer):
-    email = serializers.EmailField()
+    email    = serializers.EmailField()
     password = serializers.CharField(write_only=True)
 
 
 class CustomerSerializer(serializers.ModelSerializer):
-    email = serializers.EmailField(source='user.email', read_only=True)
-    user_type = serializers.CharField(source='user.user_type', read_only=True)
+    email            = serializers.EmailField(source='user.email', read_only=True)
+    user_type        = serializers.CharField(source='user.user_type', read_only=True)
+    # ── NEW: expose verification status to Flutter ────────────────────
+    is_email_verified = serializers.SerializerMethodField()
 
     class Meta:
-        model = Customer
-        fields = ['email', 'full_name', 'user_type', 'phone']
+        model  = Customer
+        fields = ['email', 'full_name', 'user_type', 'phone', 'is_email_verified']
+
+    def get_is_email_verified(self, obj):
+        return obj.email_verified_at is not None
 
 
 class StaffSerializer(serializers.ModelSerializer):
-    email = serializers.EmailField(source='user.email', read_only=True)
+    email     = serializers.EmailField(source='user.email', read_only=True)
     user_type = serializers.CharField(source='user.user_type', read_only=True)
 
     class Meta:
-        model = Staff
+        model  = Staff
         fields = ['email', 'full_name', 'user_type', 'employee_id', 'phone']
 
 
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
-        model = User
+        model  = User
         fields = ['id', 'email', 'user_type']
 
 
@@ -79,7 +94,7 @@ class UserSerializer(serializers.ModelSerializer):
 
 class VehicleSerializer(serializers.ModelSerializer):
     class Meta:
-        model = Vehicle
+        model  = Vehicle
         fields = [
             'id', 'vehicle_name', 'vehicle_number',
             'vehicle_type', 'battery_capacity',
@@ -90,7 +105,7 @@ class VehicleSerializer(serializers.ModelSerializer):
 
 class VehicleCreateSerializer(serializers.ModelSerializer):
     class Meta:
-        model = Vehicle
+        model  = Vehicle
         fields = [
             'vehicle_name', 'vehicle_number',
             'vehicle_type', 'battery_capacity',
@@ -110,7 +125,7 @@ class ChargerSerializer(serializers.ModelSerializer):
     connector_types_list = serializers.SerializerMethodField()
 
     class Meta:
-        model = Charger
+        model  = Charger
         fields = [
             'id', 'charger_name', 'charger_type',
             'power_output', 'connector_types',
@@ -125,36 +140,29 @@ class ChargerSerializer(serializers.ModelSerializer):
 
 
 class ChargingStationListSerializer(serializers.ModelSerializer):
-    total_chargers = serializers.SerializerMethodField()
+    total_chargers     = serializers.SerializerMethodField()
     available_chargers = serializers.SerializerMethodField()
-    amenities_list = serializers.SerializerMethodField()
+    amenities_list     = serializers.SerializerMethodField()
 
     class Meta:
-        model = ChargingStation
+        model  = ChargingStation
         fields = [
             'id', 'name', 'address', 'latitude', 'longitude',
             'operating_hours', 'amenities', 'amenities_list',
             'total_chargers', 'available_chargers', 'is_active',
         ]
 
-    def get_total_chargers(self, obj):
-        return obj.chargers.count()
-
-    def get_available_chargers(self, obj):
-        return obj.chargers.filter(is_available=True, status='available').count()
-
-    def get_amenities_list(self, obj):
-        if obj.amenities:
-            return [a.strip() for a in obj.amenities.split(',')]
-        return []
+    def get_total_chargers(self, obj):     return obj.chargers.count()
+    def get_available_chargers(self, obj): return obj.chargers.filter(is_available=True, status='available').count()
+    def get_amenities_list(self, obj):     return [a.strip() for a in obj.amenities.split(',')] if obj.amenities else []
 
 
 class ChargingStationDetailSerializer(serializers.ModelSerializer):
-    chargers = ChargerSerializer(many=True, read_only=True)
+    chargers       = ChargerSerializer(many=True, read_only=True)
     amenities_list = serializers.SerializerMethodField()
 
     class Meta:
-        model = ChargingStation
+        model  = ChargingStation
         fields = [
             'id', 'name', 'address', 'latitude', 'longitude',
             'operating_hours', 'amenities', 'amenities_list',
@@ -162,162 +170,107 @@ class ChargingStationDetailSerializer(serializers.ModelSerializer):
         ]
 
     def get_amenities_list(self, obj):
-        if obj.amenities:
-            return [a.strip() for a in obj.amenities.split(',')]
-        return []
+        return [a.strip() for a in obj.amenities.split(',')] if obj.amenities else []
 
 
 # ==================== TIME SLOT SERIALIZERS ====================
 
 class TimeSlotSerializer(serializers.ModelSerializer):
     class Meta:
-        model = TimeSlot
+        model  = TimeSlot
         fields = ['id', 'date', 'start_time', 'end_time', 'is_available']
 
 
 # ==================== BOOKING SERIALIZERS ====================
 
 class ChargingBookingSerializer(serializers.ModelSerializer):
-    station_name = serializers.SerializerMethodField()
-    charger_name = serializers.SerializerMethodField()
-    charger_type = serializers.SerializerMethodField()
-    vehicle_name = serializers.SerializerMethodField()
-    vehicle_number = serializers.SerializerMethodField()
+    station_name    = serializers.SerializerMethodField()
+    charger_name    = serializers.SerializerMethodField()
+    charger_type    = serializers.SerializerMethodField()
+    vehicle_name    = serializers.SerializerMethodField()
+    vehicle_number  = serializers.SerializerMethodField()
     time_slot_start = serializers.SerializerMethodField()
-    time_slot_end = serializers.SerializerMethodField()
-    customer_name = serializers.SerializerMethodField()
-    customer_email = serializers.SerializerMethodField()
-    customer_phone = serializers.SerializerMethodField()
+    time_slot_end   = serializers.SerializerMethodField()
+    customer_name   = serializers.SerializerMethodField()
+    customer_email  = serializers.SerializerMethodField()
+    customer_phone  = serializers.SerializerMethodField()
 
     class Meta:
-        model = ChargingBooking
+        model  = ChargingBooking
         fields = [
-            'id', 'status', 'booking_date',
-            'start_time', 'end_time',
-            'estimated_energy', 'estimated_cost',
-            'actual_energy', 'actual_cost',
+            'id', 'status', 'booking_date', 'start_time', 'end_time',
+            'estimated_energy', 'estimated_cost', 'actual_energy', 'actual_cost',
             'notes', 'created_at',
             'station_name', 'charger_name', 'charger_type',
-            'vehicle_name', 'vehicle_number',
-            'time_slot_start', 'time_slot_end',
+            'vehicle_name', 'vehicle_number', 'time_slot_start', 'time_slot_end',
             'customer_name', 'customer_email', 'customer_phone',
         ]
 
-    def get_station_name(self, obj):
-        return obj.charger.station.name if obj.charger else None
-
-    def get_charger_name(self, obj):
-        return obj.charger.charger_name if obj.charger else None
-
-    def get_charger_type(self, obj):
-        return obj.charger.charger_type if obj.charger else None
-
-    def get_vehicle_name(self, obj):
-        return obj.vehicle.vehicle_name if obj.vehicle else None
-
-    def get_vehicle_number(self, obj):
-        return obj.vehicle.vehicle_number if obj.vehicle else None
-
-    def get_time_slot_start(self, obj):
-        return str(obj.time_slot.start_time) if obj.time_slot else None
-
-    def get_time_slot_end(self, obj):
-        return str(obj.time_slot.end_time) if obj.time_slot else None
-
-    def get_customer_name(self, obj):
-        return obj.customer.full_name if obj.customer else None
-
-    def get_customer_email(self, obj):
-        return obj.customer.user.email if obj.customer else None
-
-    def get_customer_phone(self, obj):
-        return obj.customer.phone if obj.customer else None
+    def get_station_name(self, obj):    return obj.charger.station.name if obj.charger else None
+    def get_charger_name(self, obj):    return obj.charger.charger_name if obj.charger else None
+    def get_charger_type(self, obj):    return obj.charger.charger_type if obj.charger else None
+    def get_vehicle_name(self, obj):    return obj.vehicle.vehicle_name if obj.vehicle else None
+    def get_vehicle_number(self, obj):  return obj.vehicle.vehicle_number if obj.vehicle else None
+    def get_time_slot_start(self, obj): return str(obj.time_slot.start_time) if obj.time_slot else None
+    def get_time_slot_end(self, obj):   return str(obj.time_slot.end_time) if obj.time_slot else None
+    def get_customer_name(self, obj):   return obj.customer.full_name if obj.customer else None
+    def get_customer_email(self, obj):  return obj.customer.user.email if obj.customer else None
+    def get_customer_phone(self, obj):  return obj.customer.phone if obj.customer else None
 
 
 class ChargingBookingCreateSerializer(serializers.ModelSerializer):
     class Meta:
-        model = ChargingBooking
-        fields = [
-            'charger', 'vehicle', 'time_slot',
-            'booking_date', 'estimated_energy', 'notes',
-        ]
+        model  = ChargingBooking
+        fields = ['charger', 'vehicle', 'time_slot', 'booking_date', 'estimated_energy', 'notes']
 
     def validate(self, data):
-        charger = data.get('charger')
-        time_slot = data.get('time_slot')
+        charger      = data.get('charger')
+        time_slot    = data.get('time_slot')
         booking_date = data.get('booking_date')
 
         if not charger.station.is_active:
-            raise serializers.ValidationError(
-                {'charger': 'This charging station is not active'}
-            )
-
+            raise serializers.ValidationError({'charger': 'This charging station is not active'})
         if not time_slot.is_available:
-            raise serializers.ValidationError(
-                {'time_slot': 'This time slot is no longer available'}
-            )
+            raise serializers.ValidationError({'time_slot': 'This time slot is no longer available'})
 
-        # Prevent double booking on same charger + slot
         existing = ChargingBooking.objects.filter(
-            charger=charger,
-            time_slot=time_slot,
-            booking_date=booking_date,
+            charger=charger, time_slot=time_slot, booking_date=booking_date,
             status__in=['pending', 'confirmed', 'in_progress']
         )
         if existing.exists():
-            raise serializers.ValidationError(
-                {'time_slot': 'This slot has already been booked'}
-            )
+            raise serializers.ValidationError({'time_slot': 'This slot has already been booked'})
 
         customer = self.context['request'].user.customer
-        vehicle = data['vehicle']
+        vehicle  = data['vehicle']
 
         if vehicle.customer != customer:
-            raise serializers.ValidationError(
-                {'vehicle': 'This vehicle does not belong to you'}
-            )
-
-        # ── ICE vehicles cannot book chargers ───────────────────────
+            raise serializers.ValidationError({'vehicle': 'This vehicle does not belong to you'})
         if vehicle.is_ice:
-            raise serializers.ValidationError(
-                {'vehicle': 'ICE vehicles cannot book EV charging stations. Only car wash is available for ICE vehicles.'}
-            )
-
-        # ── Same user: cross-service conflict ───────────────────────
-        # If this customer already has ANY booking at this time, block it
-        slot_start = time_slot.start_time
+            raise serializers.ValidationError({'vehicle': 'ICE vehicles cannot book EV charging stations.'})
 
         existing_service = ServiceBooking.objects.filter(
-            customer=customer,
-            booking_date=booking_date,
-            preferred_time=slot_start,
-            status__in=['pending', 'confirmed', 'in_progress']
+            customer=customer, booking_date=booking_date,
+            preferred_time=time_slot.start_time, status__in=['pending', 'confirmed', 'in_progress']
         )
         if existing_service.exists():
-            raise serializers.ValidationError(
-                {'time_slot': 'You already have a booking at this time.'}
-            )
+            raise serializers.ValidationError({'time_slot': 'You already have a booking at this time.'})
 
         return data
 
     def create(self, validated_data):
         if validated_data.get('estimated_energy'):
             charger = validated_data['charger']
-            validated_data['estimated_cost'] = (
-                validated_data['estimated_energy'] * charger.price_per_kwh
-            )
+            validated_data['estimated_cost'] = validated_data['estimated_energy'] * charger.price_per_kwh
 
         time_slot = validated_data['time_slot']
         validated_data['start_time'] = time_slot.start_time
-        validated_data['end_time'] = time_slot.end_time
-        validated_data['customer'] = self.context['request'].user.customer
-        validated_data['status'] = 'pending'
+        validated_data['end_time']   = time_slot.end_time
+        validated_data['customer']   = self.context['request'].user.customer
+        validated_data['status']     = 'pending'
 
         booking = super().create(validated_data)
-
         time_slot.is_available = False
         time_slot.save()
-
         return booking
 
 
@@ -327,218 +280,117 @@ class ServiceCategorySerializer(serializers.ModelSerializer):
     services = serializers.SerializerMethodField()
 
     class Meta:
-        model = ServiceCategory
+        model  = ServiceCategory
         fields = ['id', 'name', 'description', 'is_active', 'services']
 
     def get_services(self, obj):
-        active_services = obj.services.filter(is_active=True)
-        return ServiceSerializer(active_services, many=True).data
+        return ServiceSerializer(obj.services.filter(is_active=True), many=True).data
 
-
-# ==================== SERVICE ====================
 
 class ServiceSerializer(serializers.ModelSerializer):
-    category_name = serializers.CharField(
-        source='category.get_name_display', read_only=True)
-    category_type = serializers.CharField(
-        source='category.name', read_only=True)
+    category_name = serializers.CharField(source='category.get_name_display', read_only=True)
+    category_type = serializers.CharField(source='category.name', read_only=True)
 
     class Meta:
-        model = Service
-        fields = [
-            'id', 'name', 'description',
-            'price', 'duration_minutes',
-            'category_name', 'category_type',
-            'is_active',
-        ]
+        model  = Service
+        fields = ['id', 'name', 'description', 'price', 'duration_minutes', 'category_name', 'category_type', 'is_active']
 
-
-# ==================== MECHANIC ====================
 
 class MechanicSerializer(serializers.ModelSerializer):
     class Meta:
-        model = Mechanic
-        fields = [
-            'id', 'full_name', 'specialization',
-            'experience_years', 'is_available',
-        ]
+        model  = Mechanic
+        fields = ['id', 'full_name', 'specialization', 'experience_years', 'is_available']
 
-# ==================== SERVICE REPORT ====================
 
 class ServiceReportSerializer(serializers.ModelSerializer):
     class Meta:
-        model = ServiceReport
-        fields = [
-            'id', 'issues_found', 'recommendations',
-            'overall_condition', 'battery_health', 'created_at',
-        ]
+        model        = ServiceReport
+        fields       = ['id', 'issues_found', 'recommendations', 'overall_condition', 'battery_health', 'created_at']
         read_only_fields = ['id', 'created_at']
 
 
-
-
-
-# ==================== SERVICE BOOKING ====================
-
 class ServiceBookingSerializer(serializers.ModelSerializer):
-    service_name = serializers.CharField(source='service.name', read_only=True)
-    service_price = serializers.DecimalField(
-        source='service.price', max_digits=8, decimal_places=2, read_only=True)
-    service_duration = serializers.IntegerField(
-        source='service.duration_minutes', read_only=True)
-    category_type = serializers.CharField(
-        source='service.category.name', read_only=True)
-    customer_name = serializers.CharField(
-        source='customer.full_name', read_only=True)
-    customer_phone = serializers.CharField(
-        source='customer.phone', read_only=True)
-    customer_email = serializers.CharField(
-        source='customer.user.email', read_only=True)
-    vehicle_name = serializers.CharField(
-        source='vehicle.vehicle_name', read_only=True)
-    vehicle_number = serializers.CharField(
-        source='vehicle.vehicle_number', read_only=True)
-    mechanic_name = serializers.SerializerMethodField()
-    report = ServiceReportSerializer(read_only=True)
-    
+    service_name     = serializers.CharField(source='service.name', read_only=True)
+    service_price    = serializers.DecimalField(source='service.price', max_digits=8, decimal_places=2, read_only=True)
+    service_duration = serializers.IntegerField(source='service.duration_minutes', read_only=True)
+    category_type    = serializers.CharField(source='service.category.name', read_only=True)
+    customer_name    = serializers.CharField(source='customer.full_name', read_only=True)
+    customer_phone   = serializers.CharField(source='customer.phone', read_only=True)
+    customer_email   = serializers.CharField(source='customer.user.email', read_only=True)
+    vehicle_name     = serializers.CharField(source='vehicle.vehicle_name', read_only=True)
+    vehicle_number   = serializers.CharField(source='vehicle.vehicle_number', read_only=True)
+    mechanic_name    = serializers.SerializerMethodField()
+    report           = ServiceReportSerializer(read_only=True)
 
     class Meta:
-        model = ServiceBooking
+        model  = ServiceBooking
         fields = [
             'id', 'status', 'booking_date', 'preferred_time',
-            'estimated_cost', 'notes', 'staff_notes',
-            'created_at', 'updated_at',
-            'service_name', 'service_price',
-            'service_duration', 'category_type',
+            'estimated_cost', 'notes', 'staff_notes', 'created_at', 'updated_at',
+            'service_name', 'service_price', 'service_duration', 'category_type',
             'customer_name', 'customer_phone', 'customer_email',
-            'vehicle_name', 'vehicle_number',
-            'mechanic_name',
-            'report',
+            'vehicle_name', 'vehicle_number', 'mechanic_name', 'report',
         ]
 
     def get_mechanic_name(self, obj):
-        if obj.assigned_mechanic:
-             return obj.assigned_mechanic.full_name
-        return None
+        return obj.assigned_mechanic.full_name if obj.assigned_mechanic else None
 
 
 class ServiceBookingCreateSerializer(serializers.ModelSerializer):
-    """Used when customer creates a new service booking"""
-
     class Meta:
-        model = ServiceBooking
-        fields = [
-            'service', 'vehicle',
-            'booking_date', 'preferred_time', 'notes',
-        ]
+        model  = ServiceBooking
+        fields = ['service', 'vehicle', 'booking_date', 'preferred_time', 'notes']
 
     def validate(self, data):
-        service = data.get('service')
-        vehicle = data.get('vehicle')
+        service      = data.get('service')
+        vehicle      = data.get('vehicle')
         booking_date = data.get('booking_date')
         preferred_time = data.get('preferred_time')
 
-        # Check service is active
         if not service.is_active:
-            raise serializers.ValidationError(
-                {'service': 'This service is not currently available'}
-            )
+            raise serializers.ValidationError({'service': 'This service is not currently available'})
 
-        # Check vehicle belongs to this customer
         customer = self.context['request'].user.customer
         if vehicle.customer != customer:
-            raise serializers.ValidationError(
-                {'vehicle': 'This vehicle does not belong to you'}
-            )
+            raise serializers.ValidationError({'vehicle': 'This vehicle does not belong to you'})
+        if vehicle.is_ice and service.category.name != 'car_wash':
+            raise serializers.ValidationError({'vehicle': 'ICE vehicles can only book car wash services.'})
 
-        # ── ICE vehicles can ONLY book car wash ─────────────────────
-        if vehicle.is_ice:
-            if service.category.name != 'car_wash':
-                raise serializers.ValidationError(
-                    {'vehicle': 'ICE vehicles can only book car wash services.'}
-                )
+        if ServiceBooking.objects.filter(customer=customer, service=service, booking_date=booking_date, status__in=['pending', 'confirmed', 'in_progress']).exists():
+            raise serializers.ValidationError('You already have a booking for this service on this date')
 
-        # ── Prevent duplicate: same customer, same service, same date ─
-        existing = ServiceBooking.objects.filter(
-            customer=customer,
-            service=service,
-            booking_date=booking_date,
-            status__in=['pending', 'confirmed', 'in_progress']
-        )
-        if existing.exists():
-            raise serializers.ValidationError(
-                'You already have a booking for this service on this date'
-            )
+        if ServiceBooking.objects.filter(service=service, booking_date=booking_date, preferred_time=preferred_time, status__in=['pending', 'confirmed', 'in_progress']).exclude(customer=customer).exists():
+            raise serializers.ValidationError({'preferred_time': 'This service is already booked for the selected time.'})
 
-        # ── Different user conflict: same service, same date+time ────
-        # If User A books car wash at 10 AM,
-        # User B cannot book that same service at 10 AM
-        conflicting_service = ServiceBooking.objects.filter(
-            service=service,
-            booking_date=booking_date,
-            preferred_time=preferred_time,
-            status__in=['pending', 'confirmed', 'in_progress']
-        ).exclude(customer=customer)
-        if conflicting_service.exists():
-            raise serializers.ValidationError(
-                {'preferred_time': 'This service is already booked for the selected time.'}
-            )
+        if ChargingBooking.objects.filter(customer=customer, booking_date=booking_date, start_time=preferred_time, status__in=['pending', 'confirmed', 'in_progress']).exists():
+            raise serializers.ValidationError({'preferred_time': 'You already have a booking at this time.'})
 
-        # ── Same user conflict: already has a charging booking ───────
-        # If this customer booked a charger at 10 AM,
-        # they cannot book any service at 10 AM
-        existing_charging = ChargingBooking.objects.filter(
-            customer=customer,
-            booking_date=booking_date,
-            start_time=preferred_time,
-            status__in=['pending', 'confirmed', 'in_progress']
-        )
-        if existing_charging.exists():
-            raise serializers.ValidationError(
-                {'preferred_time': 'You already have a booking at this time.'}
-            )
-
-        # ── Same user conflict: already has a different service ──────
-        # If this customer booked car wash at 10 AM,
-        # they cannot book EV check at 10 AM either
-        existing_other_service = ServiceBooking.objects.filter(
-            customer=customer,
-            booking_date=booking_date,
-            preferred_time=preferred_time,
-            status__in=['pending', 'confirmed', 'in_progress']
-        ).exclude(service=service)
-        if existing_other_service.exists():
-            raise serializers.ValidationError(
-                {'preferred_time': 'You already have a booking at this time.'}
-            )
+        if ServiceBooking.objects.filter(customer=customer, booking_date=booking_date, preferred_time=preferred_time, status__in=['pending', 'confirmed', 'in_progress']).exclude(service=service).exists():
+            raise serializers.ValidationError({'preferred_time': 'You already have a booking at this time.'})
 
         return data
 
     def create(self, validated_data):
-        validated_data['customer'] = self.context['request'].user.customer
+        validated_data['customer']       = self.context['request'].user.customer
         validated_data['estimated_cost'] = validated_data['service'].price
         return super().create(validated_data)
-    
-    # ==================== BLUE BOOK RENEWAL ====================
+
+
+# ==================== BLUE BOOK RENEWAL ====================
 
 class BlueBookRenewalSerializer(serializers.ModelSerializer):
-    customer_name = serializers.CharField(
-        source='customer.full_name', read_only=True)
-    customer_email = serializers.CharField(
-        source='customer.user.email', read_only=True)
+    customer_name  = serializers.CharField(source='customer.full_name', read_only=True)
+    customer_email = serializers.CharField(source='customer.user.email', read_only=True)
 
     class Meta:
-        model = BlueBookRenewal
+        model  = BlueBookRenewal
         fields = [
-            'id', 'status', 'vehicle_type', 'manufacture_year',
-            'cubic_capacity', 'last_renewal_from_bs',
-            'last_renewal_to_bs', 'has_third_party_insurance',
-            'unpaid_tax', 'unpaid_tax_fine', 'tax_current_year',
-            'tax_fine_current_year', 'renewal_charge', 'renewal_fine',
-            'model_tax', 'insurance_amount', 'service_charge',
-            'total_amount', 'full_name', 'contact_number', 'email',
-            'pick_location', 'city', 'vehicle_number',
-            'staff_notes', 'created_at',
+            'id', 'status', 'vehicle_type', 'manufacture_year', 'cubic_capacity',
+            'last_renewal_from_bs', 'last_renewal_to_bs', 'has_third_party_insurance',
+            'unpaid_tax', 'unpaid_tax_fine', 'tax_current_year', 'tax_fine_current_year',
+            'renewal_charge', 'renewal_fine', 'model_tax', 'insurance_amount',
+            'service_charge', 'total_amount', 'full_name', 'contact_number', 'email',
+            'pick_location', 'city', 'vehicle_number', 'staff_notes', 'created_at',
             'customer_name', 'customer_email',
         ]
         read_only_fields = ['id', 'created_at', 'status']
@@ -546,19 +398,16 @@ class BlueBookRenewalSerializer(serializers.ModelSerializer):
 
 class BlueBookRenewalCreateSerializer(serializers.ModelSerializer):
     class Meta:
-        model = BlueBookRenewal
+        model  = BlueBookRenewal
         fields = [
             'vehicle_type', 'manufacture_year', 'cubic_capacity',
-            'last_renewal_from_bs', 'last_renewal_to_bs',
-            'has_third_party_insurance', 'unpaid_tax', 'unpaid_tax_fine',
-            'tax_current_year', 'tax_fine_current_year', 'renewal_charge',
-            'renewal_fine', 'model_tax', 'insurance_amount',
-            'service_charge', 'total_amount', 'full_name',
-            'contact_number', 'email', 'pick_location',
-            'city', 'vehicle_number',
+            'last_renewal_from_bs', 'last_renewal_to_bs', 'has_third_party_insurance',
+            'unpaid_tax', 'unpaid_tax_fine', 'tax_current_year', 'tax_fine_current_year',
+            'renewal_charge', 'renewal_fine', 'model_tax', 'insurance_amount',
+            'service_charge', 'total_amount', 'full_name', 'contact_number', 'email',
+            'pick_location', 'city', 'vehicle_number',
         ]
 
     def create(self, validated_data):
-        validated_data['customer'] = \
-            self.context['request'].user.customer
+        validated_data['customer'] = self.context['request'].user.customer
         return super().create(validated_data)
