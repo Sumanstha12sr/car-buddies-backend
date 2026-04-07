@@ -381,7 +381,10 @@ def password_reset_redirect(request, token):
             color='#e65100',
         )
 
-    # Redirect to Flutter deep link
+    # ADD THIS temporarily
+    print("DEBUG: About to redirect to:", f'carbuddies://reset-password?token={token}')
+    print("DEBUG: Request headers:", dict(request.headers))
+
     return django_redirect(f'carbuddies://reset-password?token={token}')
 
 

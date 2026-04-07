@@ -1,17 +1,28 @@
-from dotenv import load_dotenv
 from pathlib import Path
 from datetime import timedelta
 import os
-from decouple import config
 import dj_database_url
-load_dotenv()
+from dotenv import load_dotenv
 
+# Define BASE_DIR first, then load .env
 BASE_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(BASE_DIR / '.env')
 
 SECRET_KEY = os.getenv("SECRET_KEY")
 DEBUG = os.environ.get('DEBUG', 'False') == 'True'
+
 FIREBASE_CREDENTIALS_PATH = '/path/to/serviceAccountKey.json'
 ALLOWED_HOSTS = ['*']
+
+# NGROK FIXES
+USE_X_FORWARDED_HOST = True
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
+CSRF_TRUSTED_ORIGINS = [
+    'https://*.ngrok-free.app',
+    'https://*.ngrok-free.dev',
+    'https://*.ngrok.io',
+]
 
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -23,7 +34,7 @@ INSTALLED_APPS = [
     'corsheaders',
     'rest_framework',
     'rest_framework_simplejwt',
-   'accounts.apps.AccountsConfig',
+    'accounts.apps.AccountsConfig',
 ]
 
 REST_FRAMEWORK = {
@@ -36,8 +47,6 @@ SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(days=1),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
 }
-
-EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 
 AUTH_USER_MODEL = 'accounts.User'
 
@@ -74,24 +83,20 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'backend.wsgi.application'
 
-# Local database (for development on your PC)
-# Railway will override this using environment variables
-import dj_database_url
+# Database — Railway overrides with DATABASE_URL, otherwise use local PostgreSQL
 DATABASE_URL = os.environ.get('DATABASE_URL')
 
 if DATABASE_URL:
-    # Running on Railway - use PostgreSQL from environment
     DATABASES = {
         'default': dj_database_url.config(default=DATABASE_URL, conn_max_age=600)
     }
 else:
-    # Running locally - use your local PostgreSQL
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.postgresql',
             'NAME': 'car_buddies_db',
             'USER': 'postgres',
-            'PASSWORD': os.getenv("DB_PASSWORD"),
+            'PASSWORD': os.getenv('PASSWORD'),
             'HOST': 'localhost',
             'PORT': '5432',
         }
@@ -113,7 +118,6 @@ STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
-# ── Logging — add at the bottom of settings.py ──────────────────
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
@@ -136,15 +140,15 @@ LOGGING = {
             'propagate': False,
         },
     },
-
 }
 
-
 # Email Configuration
-EMAIL_BACKEND = os.getenv("EMAIL_BACKEND")
-EMAIL_HOST = os.getenv("EMAIL_HOST")
-EMAIL_PORT = int(os.getenv("EMAIL_PORT", 587))
-EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS", "True") == "True"
-EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER")
-EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD")
-DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL")
+EMAIL_BACKEND       = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_HOST          = 'smtp.gmail.com'
+EMAIL_PORT          = 587
+EMAIL_USE_TLS       = True
+EMAIL_HOST_USER     = os.getenv('EMAIL_HOST_USER')
+EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD')
+DEFAULT_FROM_EMAIL  = os.getenv('DEFAULT_FROM_EMAIL')
+
+BACKEND_URL = os.getenv('BACKEND_URL')
