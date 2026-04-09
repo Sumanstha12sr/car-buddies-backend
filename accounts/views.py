@@ -2,7 +2,6 @@ import uuid
 from django.core.mail import send_mail
 from django.conf import settings
 from django.http import HttpResponse
-from django.shortcuts import redirect as django_redirect
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
@@ -385,7 +384,9 @@ def password_reset_redirect(request, token):
     print("DEBUG: About to redirect to:", f'carbuddies://reset-password?token={token}')
     print("DEBUG: Request headers:", dict(request.headers))
 
-    return django_redirect(f'carbuddies://reset-password?token={token}')
+    response = HttpResponse(status=302)
+    response['Location'] = f'carbuddies://reset-password?token={token}'
+    return response
 
 
 # ==================== RESET PASSWORD ====================
