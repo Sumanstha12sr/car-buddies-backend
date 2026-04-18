@@ -4,6 +4,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.utils import timezone
 from datetime import datetime, timedelta, time
+import traceback
 from .models import Vehicle, ChargingStation, Charger, TimeSlot, ChargingBooking, Customer, ServiceBooking
 from .serializers import (
     VehicleSerializer, VehicleCreateSerializer,
@@ -12,10 +13,19 @@ from .serializers import (
     ChargingBookingSerializer, ChargingBookingCreateSerializer
 )
 from .firebase_service import (
-    notify_staff_new_charging_booking,
     notify_customer_charging_update,
+    send_fcm_push_to_user,           # ← ADDED
 )
-from .notification_utils import notify_staff, notify_customer  # ← updated
+from .notification_utils import notify_staff, notify_customer
+
+
+def get_customer_name(request):
+    """Helper: returns customer full name, falls back to email."""
+    try:
+        return request.user.customer.full_name
+    except Exception:
+        return request.user.email
+
 
 # ==================== VEHICLE MANAGEMENT ====================
 
@@ -248,9 +258,7 @@ def get_available_time_slots(request, charger_id):
 
 def _generate_time_slots(charger, date):
     slots = []
-    start_hour = 6
-    end_hour = 20
-    for hour in range(start_hour, end_hour):
+    for hour in range(6, 20):
         start_time = time(hour, 0)
         end_time = time(hour + 1, 0)
         slot, created = TimeSlot.objects.get_or_create(
@@ -312,10 +320,7 @@ def get_service_time_slots(request):
         )
 
     slots = []
-    start_hour = 8
-    end_hour = 17
-
-    for hour in range(start_hour, end_hour):
+    for hour in range(8, 17):
         slot_time = time(hour, 0)
         if booking_date == today:
             buffer = (datetime.combine(today, now_time) + timedelta(minutes=30)).time()
@@ -355,19 +360,12 @@ def create_booking(request):
         if serializer.is_valid():
             booking = serializer.save()
 
-            # ── Notify staff of new charging booking (Firebase push) ──
-            try:
-                notify_staff_new_charging_booking(booking)
-            except Exception:
-                pass
-
-            # ── Notify staff (in-app + FCM via notification_utils) ────
             try:
                 notify_staff(
                     notification_type='charging_booking',
                     title='⚡ New Charging Booking',
                     body=(
-                        f'{request.user.get_full_name() or request.user.email} '
+                        f'{get_customer_name(request)} '
                         f'booked EV charging for '
                         f'{booking.booking_date.strftime("%d %b %Y")} '
                         f'at {str(booking.start_time)[:5]}.'
@@ -375,7 +373,7 @@ def create_booking(request):
                     extra_data={'booking_id': str(booking.id)},
                 )
             except Exception:
-                pass
+                traceback.print_exc()
 
             return Response(
                 ChargingBookingSerializer(booking).data,
@@ -418,53 +416,51 @@ def cancel_booking(request, booking_id):
     try:
         customer = Customer.objects.get(user=request.user)
         booking = ChargingBooking.objects.get(id=booking_id, customer=customer)
-
-        if booking.status in ['completed', 'cancelled']:
-            return Response({'error': 'Cannot cancel this booking'}, status=status.HTTP_400_BAD_REQUEST)
-
-        old_status = booking.status
-        booking.status = 'cancelled'
-        booking.save()
-
-        other_active = ChargingBooking.objects.filter(
-            time_slot=booking.time_slot,
-            status__in=['pending', 'confirmed', 'in_progress']
-        ).exclude(id=booking_id)
-
-        if not other_active.exists():
-            booking.time_slot.is_available = True
-            booking.time_slot.save()
-
-        if old_status == 'in_progress':
-            charger = booking.charger
-            other_in_progress = ChargingBooking.objects.filter(
-                charger=charger, status='in_progress'
-            ).exclude(id=booking_id)
-            if not other_in_progress.exists():
-                charger.status = 'available'
-                charger.is_available = True
-                charger.save()
-
-        # ── Notify staff that customer cancelled ──────────────
-        try:
-            notify_staff(
-                notification_type='booking_cancelled',
-                title='❌ Charging Booking Cancelled',
-                body=(
-                    f'{request.user.get_full_name() or request.user.email} '
-                    f'cancelled their EV charging booking for '
-                    f'{booking.booking_date.strftime("%d %b %Y")} '
-                    f'at {str(booking.start_time)[:5]}.'
-                ),
-                extra_data={'booking_id': str(booking_id)},
-            )
-        except Exception:
-            pass
-
-        return Response({'message': 'Booking cancelled successfully'}, status=status.HTTP_200_OK)
-
     except ChargingBooking.DoesNotExist:
         return Response({'error': 'Booking not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    if booking.status in ['completed', 'cancelled']:
+        return Response({'error': 'Cannot cancel this booking'}, status=status.HTTP_400_BAD_REQUEST)
+
+    old_status = booking.status
+    booking.status = 'cancelled'
+    booking.save()
+
+    other_active = ChargingBooking.objects.filter(
+        time_slot=booking.time_slot,
+        status__in=['pending', 'confirmed', 'in_progress']
+    ).exclude(id=booking_id)
+
+    if not other_active.exists():
+        booking.time_slot.is_available = True
+        booking.time_slot.save()
+
+    if old_status == 'in_progress':
+        charger = booking.charger
+        other_in_progress = ChargingBooking.objects.filter(
+            charger=charger, status='in_progress'
+        ).exclude(id=booking_id)
+        if not other_in_progress.exists():
+            charger.status = 'available'
+            charger.is_available = True
+            charger.save()
+
+    try:
+        notify_staff(
+            notification_type='booking_cancelled',
+            title='❌ Charging Booking Cancelled',
+            body=(
+                f'{get_customer_name(request)} '
+                f'cancelled their EV charging booking for '
+                f'{booking.booking_date.strftime("%d %b %Y")} '
+                f'at {str(booking.start_time)[:5]}.'
+            ),
+            extra_data={'booking_id': str(booking_id)},
+        )
+    except Exception:
+        traceback.print_exc()
+
+    return Response({'message': 'Booking cancelled successfully'}, status=status.HTTP_200_OK)
 
 
 # ==================== STAFF ENDPOINTS ====================
@@ -491,7 +487,7 @@ def get_all_bookings_for_staff(request):
 @api_view(['PATCH'])
 @permission_classes([IsAuthenticated])
 def update_booking_status(request, booking_id):
-    """Staff updates booking status with correct charger availability"""
+    """Staff updates charging booking status."""
     try:
         if request.user.user_type != 'staff':
             return Response({'error': 'Only staff can update booking status'}, status=status.HTTP_403_FORBIDDEN)
@@ -513,34 +509,43 @@ def update_booking_status(request, booking_id):
         booking.status = new_status
         booking.save()
 
-        # ── FIXED: Prevent double notification on staff cancel ─────────
-        # notify_customer_charging_update() creates BOTH an FCM push AND a DB
-        # Notification record with "Auto-Cancelled" title. If we also call
-        # notify_customer() for cancelled, the customer sees two notifications.
-        # Solution: skip firebase notify for cancelled; use notify_customer() only.
-        if new_status != 'cancelled':
-            try:
-                notify_customer_charging_update(booking, new_status)
-            except Exception:
-                pass
-
-        # For cancelled by staff: send single correct DB notification
+        # ── Customer notification ─────────────────────────────────────────
+        # For cancelled: write DB notification AND send FCM push separately
+        # so the customer gets both an in-app record and a push notification.
+        # For all other statuses: notify_customer_charging_update() handles
+        # both DB write and FCM push in one call.
         if new_status == 'cancelled':
+            title = '❌ Booking Cancelled by Staff'
+            body = (
+                f'Your EV charging booking at {booking.charger.station.name} '
+                f'on {booking.booking_date.strftime("%d %b %Y")} '
+                f'has been cancelled by our staff.'
+            )
             try:
                 notify_customer(
                     user=booking.customer.user,
                     notification_type='booking_cancelled',
-                    title='❌ Booking Cancelled by Staff',
-                    body=(
-                        f'Your EV charging booking at '
-                        f'{booking.charger.station.name} on '
-                        f'{booking.booking_date.strftime("%d %b %Y")} '
-                        f'has been cancelled by our staff.'
-                    ),
+                    title=title,
+                    body=body,
+                )
+                send_fcm_push_to_user(              # ← ADDED: explicit FCM push
+                    user=booking.customer.user,
+                    title=title,
+                    body=body,
+                    data={
+                        'notification_type': 'booking_cancelled',
+                        'booking_id': str(booking_id),
+                    },
                 )
             except Exception:
-                pass
+                traceback.print_exc()
+        else:
+            try:
+                notify_customer_charging_update(booking, new_status)
+            except Exception:
+                traceback.print_exc()
 
+        # ── Charger / slot state machine ──────────────────────────────────
         charger = booking.charger
 
         if new_status == 'confirmed':

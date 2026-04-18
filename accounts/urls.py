@@ -1,4 +1,6 @@
 from django.urls import path
+
+
 from . import views
 
 urlpatterns = [
@@ -25,4 +27,6 @@ urlpatterns = [
     path('notifications/',                  views.get_notifications,            name='get_notifications'),
     path('notifications/mark-read/',        views.mark_all_notifications_read,  name='mark_all_read'),
     path('notifications/clear/',            views.clear_all_notifications,      name='clear_notifications'),
+
+   
 ]

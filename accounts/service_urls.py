@@ -87,4 +87,10 @@ path('staff/blue-book/',
 path('staff/blue-book/<uuid:renewal_id>/update-status/',
      service_views.staff_update_blue_book_status,
      name='staff-blue-book-update'),  
+
+     # Staff Mechanics
+     
+     path('staff/mechanics/all/',
+     service_views.staff_get_all_mechanics,
+     name='staff-mechanics-all'),
 ]

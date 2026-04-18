@@ -366,6 +366,8 @@ class BlueBookRenewal(models.Model):
     insurance_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     service_charge = models.DecimalField(max_digits=10, decimal_places=2, default=200)
     total_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    battery_watt = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    battery_kw   = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     full_name = models.CharField(max_length=255)
     contact_number = models.CharField(max_length=15)
     email = models.EmailField()
@@ -376,7 +378,10 @@ class BlueBookRenewal(models.Model):
     staff_notes = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-
+    citizenship_front = models.ImageField(upload_to='bluebook/citizenship/', null=True, blank=True)
+    citizenship_back  = models.ImageField(upload_to='bluebook/citizenship/', null=True, blank=True)
+    insurance_doc     = models.ImageField(upload_to='bluebook/insurance/', null=True, blank=True)
+    
     class Meta:
         ordering = ['-created_at']
 

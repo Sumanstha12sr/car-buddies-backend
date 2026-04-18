@@ -8,7 +8,10 @@ logger = logging.getLogger(__name__)
 
 def auto_cancel_pending_bookings():
     from .models import ChargingBooking, ServiceBooking
-    from .notification_utils import notify_customer  # ← NEW
+    from .firebase_service import (
+        notify_customer_charging_update,
+        notify_customer_booking_update,
+    )
 
     now = datetime.now(dt_timezone.utc)
     cutoff_time = now - timedelta(minutes=30)
@@ -17,10 +20,10 @@ def auto_cancel_pending_bookings():
     logger.info(f'[Auto-Cancel] Cancelling bookings created before {cutoff_time.strftime("%Y-%m-%d %H:%M:%S")} UTC')
 
     try:
-        # ── Auto-cancel pending charging bookings ────────────────
+        # ── Auto-cancel pending charging bookings ─────────────────────────
         expired_charging = ChargingBooking.objects.filter(
             status='pending', created_at__lte=cutoff_time
-        )
+        ).select_related('customer__user', 'charger__station', 'time_slot')
 
         cancelled_charging_count = 0
         for booking in expired_charging:
@@ -28,40 +31,20 @@ def auto_cancel_pending_bookings():
                 booking.status = 'cancelled'
                 booking.save()
 
+                # Free up the time slot
                 other_active = ChargingBooking.objects.filter(
                     time_slot=booking.time_slot,
                     status__in=['pending', 'confirmed', 'in_progress']
                 ).exclude(id=booking.id)
-
                 if not other_active.exists():
                     booking.time_slot.is_available = True
                     booking.time_slot.save()
 
-                # ── Firebase push (existing) ───────────────────
-                try:
-                    from .firebase_service import notify_customer_charging_update
-                    notify_customer_charging_update(booking, 'cancelled')
-                except Exception:
-                    pass
-
-                # ── FIXED: DB in-app notification with correct title ──
-                # Without this, nothing shows in the customer's in-app
-                # notification list. The firebase push alone is not enough.
-                try:
-                    notify_customer(
-                        user=booking.customer.user,
-                        notification_type='booking_cancelled',
-                        title='⏱️ Charging Booking Auto-Cancelled',
-                        body=(
-                            f'Your EV charging booking at '
-                            f'{booking.charger.station.name} on '
-                            f'{booking.booking_date.strftime("%d %b %Y")} '
-                            f'at {str(booking.start_time)[:5]} was automatically '
-                            f'cancelled as it was not confirmed within 30 minutes.'
-                        ),
-                    )
-                except Exception:
-                    pass
+                # notify_customer_charging_update() handles BOTH:
+                #   • DB Notification record (via notify_customer internally)
+                #   • FCM push (via send_fcm_push_to_user internally)
+                # Do NOT call notify_customer() separately — that creates a duplicate.
+                notify_customer_charging_update(booking, 'cancelled')
 
                 cancelled_charging_count += 1
                 logger.info(f'[Auto-Cancel] Cancelled charging booking {booking.id}')
@@ -69,10 +52,10 @@ def auto_cancel_pending_bookings():
             except Exception as e:
                 logger.error(f'[Auto-Cancel] Error cancelling charging booking {booking.id}: {e}')
 
-        # ── Auto-cancel pending service bookings ─────────────────
+        # ── Auto-cancel pending service bookings ──────────────────────────
         expired_services = ServiceBooking.objects.filter(
             status='pending', created_at__lte=cutoff_time
-        )
+        ).select_related('customer__user', 'service__category')
 
         cancelled_service_count = 0
         for booking in expired_services:
@@ -80,28 +63,11 @@ def auto_cancel_pending_bookings():
                 booking.status = 'cancelled'
                 booking.save()
 
-                # ── Firebase push (existing) ───────────────────
-                try:
-                    from .firebase_service import notify_customer_booking_update
-                    notify_customer_booking_update(booking, 'cancelled')
-                except Exception:
-                    pass
-
-                # ── FIXED: DB in-app notification with correct title ──
-                try:
-                    notify_customer(
-                        user=booking.customer.user,
-                        notification_type='booking_cancelled',
-                        title='⏱️ Service Booking Auto-Cancelled',
-                        body=(
-                            f'Your {booking.service.name} booking on '
-                            f'{booking.booking_date.strftime("%d %b %Y")} '
-                            f'was automatically cancelled as it was not '
-                            f'confirmed within 30 minutes.'
-                        ),
-                    )
-                except Exception:
-                    pass
+                # notify_customer_booking_update() handles BOTH:
+                #   • DB Notification record (via notify_customer internally)
+                #   • FCM push (via send_fcm_push_to_user internally)
+                # Do NOT call notify_customer() separately — that creates a duplicate.
+                notify_customer_booking_update(booking, 'cancelled')
 
                 cancelled_service_count += 1
                 logger.info(f'[Auto-Cancel] Cancelled service booking {booking.id}')
@@ -122,7 +88,7 @@ def auto_cancel_pending_bookings():
         logger.error(f'[Auto-Cancel] Job failed with error: {e}')
 
 
-# ── Scheduler instance ───────────────────────────────────────────
+# ── Scheduler instance ────────────────────────────────────────────────────────
 _scheduler = None
 
 

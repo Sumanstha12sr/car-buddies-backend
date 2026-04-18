@@ -323,8 +323,10 @@ def forgot_password(request):
         user     = User.objects.get(email=email, user_type='customer')
         customer = Customer.objects.get(user=user)
     except (User.DoesNotExist, Customer.DoesNotExist):
-        return Response({'message': 'If that email exists, a reset link has been sent.'})
-
+        return Response(
+        {'error': 'No account found with this email address.'},
+        status=status.HTTP_404_NOT_FOUND
+    )
     if not user.is_active:
         return Response({'error': 'Please verify your email first before resetting your password.'}, status=status.HTTP_400_BAD_REQUEST)
 

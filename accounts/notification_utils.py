@@ -72,7 +72,9 @@ def notify_staff(notification_type: str, title: str, body: str,
     User = get_user_model()
 
     # ── 1. Fetch all staff users ─────────────────────────────────────────
-    staff_users = list(User.objects.filter(user_type='staff', is_active=True))
+    staff_users = list(User.objects.filter(
+    user_type__in=['staff', 'admin'], is_active=True
+))
 
     if not staff_users:
         logger.info('notify_staff: no active staff users found, skipping.')

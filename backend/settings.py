@@ -24,6 +24,9 @@ CSRF_TRUSTED_ORIGINS = [
     'https://*.ngrok.io',
 ]
 
+MEDIA_URL  = '/media/'
+MEDIA_ROOT = BASE_DIR / 'media'
+
 INSTALLED_APPS = [
     'django.contrib.admin',
     'django.contrib.auth',

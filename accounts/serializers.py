@@ -35,15 +35,13 @@ class CustomerRegistrationSerializer(serializers.Serializer):
         phone     = validated_data.pop('phone_number', '')
         full_name = validated_data.pop('full_name')
 
-        # ── FIXED: is_active=False until email is verified ────────────
         user = User.objects.create_user(
             email=validated_data['email'],
             password=validated_data['password'],
             user_type='customer',
-            is_active=False,  # must verify email before login
+            is_active=False,
         )
 
-        # ── Generate unique verification token ────────────────────────
         token = str(uuid_lib.uuid4())
 
         Customer.objects.create(
@@ -62,9 +60,8 @@ class LoginSerializer(serializers.Serializer):
 
 
 class CustomerSerializer(serializers.ModelSerializer):
-    email            = serializers.EmailField(source='user.email', read_only=True)
-    user_type        = serializers.CharField(source='user.user_type', read_only=True)
-    # ── NEW: expose verification status to Flutter ────────────────────
+    email             = serializers.EmailField(source='user.email', read_only=True)
+    user_type         = serializers.CharField(source='user.user_type', read_only=True)
     is_email_verified = serializers.SerializerMethodField()
 
     class Meta:
@@ -342,9 +339,9 @@ class ServiceBookingCreateSerializer(serializers.ModelSerializer):
         fields = ['service', 'vehicle', 'booking_date', 'preferred_time', 'notes']
 
     def validate(self, data):
-        service      = data.get('service')
-        vehicle      = data.get('vehicle')
-        booking_date = data.get('booking_date')
+        service        = data.get('service')
+        vehicle        = data.get('vehicle')
+        booking_date   = data.get('booking_date')
         preferred_time = data.get('preferred_time')
 
         if not service.is_active:
@@ -356,21 +353,41 @@ class ServiceBookingCreateSerializer(serializers.ModelSerializer):
         if vehicle.is_ice and service.category.name != 'car_wash':
             raise serializers.ValidationError({'vehicle': 'ICE vehicles can only book car wash services.'})
 
-        if ServiceBooking.objects.filter(customer=customer, service=service, booking_date=booking_date, status__in=['pending', 'confirmed', 'in_progress']).exists():
-            raise serializers.ValidationError('You already have a booking for this service on this date')
+        # ── FIXED: check same service + date + time (not just date) ──
+        # This allows booking the same service on the same day at a different time
+        if ServiceBooking.objects.filter(
+            customer=customer,
+            service=service,
+            booking_date=booking_date,
+            preferred_time=preferred_time,
+            status__in=['pending', 'confirmed', 'in_progress']
+        ).exists():
+            raise serializers.ValidationError(
+                {'preferred_time': 'You already have this service booked at this time.'}
+            )
 
-        if ServiceBooking.objects.filter(service=service, booking_date=booking_date, preferred_time=preferred_time, status__in=['pending', 'confirmed', 'in_progress']).exclude(customer=customer).exists():
+        if ServiceBooking.objects.filter(
+            service=service, booking_date=booking_date, preferred_time=preferred_time,
+            status__in=['pending', 'confirmed', 'in_progress']
+        ).exclude(customer=customer).exists():
             raise serializers.ValidationError({'preferred_time': 'This service is already booked for the selected time.'})
 
-        if ChargingBooking.objects.filter(customer=customer, booking_date=booking_date, start_time=preferred_time, status__in=['pending', 'confirmed', 'in_progress']).exists():
+        if ChargingBooking.objects.filter(
+            customer=customer, booking_date=booking_date,
+            start_time=preferred_time, status__in=['pending', 'confirmed', 'in_progress']
+        ).exists():
             raise serializers.ValidationError({'preferred_time': 'You already have a booking at this time.'})
 
-        if ServiceBooking.objects.filter(customer=customer, booking_date=booking_date, preferred_time=preferred_time, status__in=['pending', 'confirmed', 'in_progress']).exclude(service=service).exists():
+        if ServiceBooking.objects.filter(
+            customer=customer, booking_date=booking_date, preferred_time=preferred_time,
+            status__in=['pending', 'confirmed', 'in_progress']
+        ).exclude(service=service).exists():
             raise serializers.ValidationError({'preferred_time': 'You already have a booking at this time.'})
 
         return data
 
     def create(self, validated_data):
+
         validated_data['customer']       = self.context['request'].user.customer
         validated_data['estimated_cost'] = validated_data['service'].price
         return super().create(validated_data)
@@ -381,32 +398,63 @@ class ServiceBookingCreateSerializer(serializers.ModelSerializer):
 class BlueBookRenewalSerializer(serializers.ModelSerializer):
     customer_name  = serializers.CharField(source='customer.full_name', read_only=True)
     customer_email = serializers.CharField(source='customer.user.email', read_only=True)
+    citizenship_front = serializers.SerializerMethodField()
+    citizenship_back  = serializers.SerializerMethodField()
+    insurance_doc     = serializers.SerializerMethodField()
 
     class Meta:
         model  = BlueBookRenewal
         fields = [
             'id', 'status', 'vehicle_type', 'manufacture_year', 'cubic_capacity',
-            'last_renewal_from_bs', 'last_renewal_to_bs', 'has_third_party_insurance',
-            'unpaid_tax', 'unpaid_tax_fine', 'tax_current_year', 'tax_fine_current_year',
-            'renewal_charge', 'renewal_fine', 'model_tax', 'insurance_amount',
-            'service_charge', 'total_amount', 'full_name', 'contact_number', 'email',
-            'pick_location', 'city', 'vehicle_number', 'staff_notes', 'created_at',
-            'customer_name', 'customer_email',
-        ]
-        read_only_fields = ['id', 'created_at', 'status']
-
-
-class BlueBookRenewalCreateSerializer(serializers.ModelSerializer):
-    class Meta:
-        model  = BlueBookRenewal
-        fields = [
-            'vehicle_type', 'manufacture_year', 'cubic_capacity',
+            'battery_watt', 'battery_kw',
             'last_renewal_from_bs', 'last_renewal_to_bs', 'has_third_party_insurance',
             'unpaid_tax', 'unpaid_tax_fine', 'tax_current_year', 'tax_fine_current_year',
             'renewal_charge', 'renewal_fine', 'model_tax', 'insurance_amount',
             'service_charge', 'total_amount', 'full_name', 'contact_number', 'email',
             'pick_location', 'city', 'vehicle_number',
+            'citizenship_front', 'citizenship_back', 'insurance_doc',
+            'staff_notes', 'created_at',
+            'customer_name', 'customer_email',
         ]
+        read_only_fields = ['id', 'created_at', 'status']
+
+    def _abs_url(self, file_field):
+        if not file_field:
+            return ''
+        request = self.context.get('request')
+        return request.build_absolute_uri(file_field.url) if request else file_field.url
+
+    def get_citizenship_front(self, obj): return self._abs_url(obj.citizenship_front)
+    def get_citizenship_back(self, obj):  return self._abs_url(obj.citizenship_back)
+    def get_insurance_doc(self, obj):     return self._abs_url(obj.insurance_doc)
+
+
+class BlueBookRenewalCreateSerializer(serializers.ModelSerializer):
+    citizenship_front = serializers.ImageField(required=False, allow_null=True)
+    citizenship_back  = serializers.ImageField(required=False, allow_null=True)
+    insurance_doc     = serializers.ImageField(required=False, allow_null=True)
+
+    class Meta:
+        model  = BlueBookRenewal
+        fields = [
+            'vehicle_type', 'manufacture_year', 'cubic_capacity',
+            'battery_watt', 'battery_kw',
+            'last_renewal_from_bs', 'last_renewal_to_bs', 'has_third_party_insurance',
+            'unpaid_tax', 'unpaid_tax_fine', 'tax_current_year', 'tax_fine_current_year',
+            'renewal_charge', 'renewal_fine', 'model_tax', 'insurance_amount',
+            'service_charge', 'total_amount', 'full_name', 'contact_number', 'email',
+            'pick_location', 'city', 'vehicle_number',
+            'citizenship_front', 'citizenship_back', 'insurance_doc',
+        ]
+
+    def validate(self, attrs):
+        if not attrs.get('citizenship_front'):
+            raise serializers.ValidationError({'citizenship_front': 'Citizenship front photo is required.'})
+        if not attrs.get('citizenship_back'):
+            raise serializers.ValidationError({'citizenship_back': 'Citizenship back photo is required.'})
+        if attrs.get('has_third_party_insurance') and not attrs.get('insurance_doc'):
+            raise serializers.ValidationError({'insurance_doc': 'Insurance document is required.'})
+        return attrs
 
     def create(self, validated_data):
         validated_data['customer'] = self.context['request'].user.customer
