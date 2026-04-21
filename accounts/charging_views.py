@@ -14,7 +14,7 @@ from .serializers import (
 )
 from .firebase_service import (
     notify_customer_charging_update,
-    send_fcm_push_to_user,           # ← ADDED
+    send_fcm_push_to_user,           
 )
 from .notification_utils import notify_staff, notify_customer
 
@@ -27,7 +27,7 @@ def get_customer_name(request):
         return request.user.email
 
 
-# ==================== VEHICLE MANAGEMENT ====================
+# VEHICLE MANAGEMENT 
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
@@ -96,7 +96,7 @@ def set_default_vehicle(request, vehicle_id):
         return Response({'error': 'Vehicle not found'}, status=status.HTTP_404_NOT_FOUND)
 
 
-# ==================== CHARGING STATION ====================
+# CHARGING STATION 
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
@@ -117,7 +117,7 @@ def get_station_detail(request, station_id):
         return Response({'error': 'Station not found'}, status=status.HTTP_404_NOT_FOUND)
 
 
-# ==================== LIVE AVAILABILITY ====================
+# LIVE AVAILABILITY
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])

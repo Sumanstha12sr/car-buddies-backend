@@ -10,7 +10,7 @@ from .models import (
 User = get_user_model()
 
 
-# ==================== AUTH SERIALIZERS ====================
+#  AUTH SERIALIZERS 
 
 class CustomerRegistrationSerializer(serializers.Serializer):
     email            = serializers.EmailField()

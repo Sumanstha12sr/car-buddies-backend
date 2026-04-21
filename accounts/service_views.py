@@ -174,9 +174,7 @@ def get_service_report(request, booking_id):
     return Response(ServiceReportSerializer(booking.report).data)
 
 
-# ================================================================
-#  STAFF ENDPOINTS
-# ================================================================
+# STAFF ENDPOINTS
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
@@ -374,15 +372,11 @@ def staff_create_service_report(request, booking_id):
         serializer.save(booking=booking)
         booking.status = 'completed'
         booking.save()
-
-        # This is the ONE and ONLY place that notifies the customer
-        # about EV check completion. staff_update_service_booking_status
-        # explicitly skips 'completed' for ev_check to avoid firing here too.
         try:
             title = '🎉 EV Check-up Completed'
             body = (
                 f'Your {booking.service.name} has been completed. '
-                f'Your service report is now available. Tap to view details.'
+                f'Your service report is now available.'
             )
             notify_customer(
                 user=booking.customer.user,
@@ -570,18 +564,14 @@ def create_blue_book_renewal(request):
         data=request.data, context={'request': request}
     )
     if serializer.is_valid():
-        try:
-            renewal = serializer.save()
-        except Exception as e:
-            traceback.print_exc()
-            return Response({'debug_error': str(e)}, status=500)
+        renewal = serializer.save()
         try:
             notify_staff(
-                notification_type='blue_book_renewal',
+                notification_type='bluebook_submission',
                 title='📋 New Blue Book Renewal',
                 body=(
-                    f'{renewal.full_name} submitted a blue book renewal '
-                    f'for vehicle {renewal.vehicle_number}.'
+                    f'{get_customer_name(request)} submitted a blue book renewal for a '
+                    f'{renewal.vehicle_type.replace("_", " ").title()}.'
                 ),
                 extra_data={'renewal_id': str(renewal.id)},
             )
@@ -589,7 +579,7 @@ def create_blue_book_renewal(request):
             traceback.print_exc()
         return Response(
             BlueBookRenewalSerializer(renewal, context={'request': request}).data,
-            status=status.HTTP_201_CREATED
+            status=status.HTTP_201_CREATED,
         )
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -602,9 +592,7 @@ def get_customer_blue_book_renewals(request):
     except Exception:
         return Response({'error': 'Customer profile not found'}, status=status.HTTP_404_NOT_FOUND)
     renewals = BlueBookRenewal.objects.filter(customer=customer)
-    return Response(
-        BlueBookRenewalSerializer(renewals, many=True, context={'request': request}).data
-    )
+    return Response(BlueBookRenewalSerializer(renewals, many=True, context={'request': request}).data)
 
 
 @api_view(['GET'])
@@ -614,31 +602,5 @@ def staff_get_all_blue_book_renewals(request):
     status_filter = request.query_params.get('status')
     if status_filter:
         renewals = renewals.filter(status=status_filter)
-    return Response(
-        BlueBookRenewalSerializer(renewals, many=True, context={'request': request}).data
-    )
+    return Response(BlueBookRenewalSerializer(renewals, many=True, context={'request': request}).data)
 
-
-@api_view(['PATCH'])
-@permission_classes([IsAuthenticated])
-def staff_update_blue_book_status(request, renewal_id):
-    try:
-        renewal = BlueBookRenewal.objects.get(id=renewal_id)
-    except BlueBookRenewal.DoesNotExist:
-        return Response({'error': 'Renewal not found'}, status=status.HTTP_404_NOT_FOUND)
-
-    new_status = request.data.get('status')
-    if new_status not in ['submitted', 'under_review', 'completed', 'rejected']:
-        return Response(
-            {'error': 'Invalid status. Choose from: submitted, under_review, completed, rejected'},
-            status=status.HTTP_400_BAD_REQUEST
-        )
-
-    renewal.status = new_status
-    if request.data.get('staff_notes'):
-        renewal.staff_notes = request.data.get('staff_notes')
-    renewal.save()
-    return Response(
-        BlueBookRenewalSerializer(renewal, context={'request': request}).data,
-        status=status.HTTP_200_OK
-    )

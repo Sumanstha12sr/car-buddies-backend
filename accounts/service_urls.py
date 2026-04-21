@@ -1,11 +1,11 @@
-# accounts/service_urls.py
+
 
 from django.urls import path
 from . import service_views
 
 urlpatterns = [
 
-    # ── Customer: Browse Services ──────────────────────────────────
+    # Customer: Browse Services 
     path('categories/',
          service_views.get_service_categories,
          name='service-categories'),
@@ -14,8 +14,8 @@ urlpatterns = [
          service_views.get_services_by_category,
          name='services-by-category'),
 
-    # ── Customer: Bookings ─────────────────────────────────────────
-    # IMPORTANT: static paths must come before <uuid> paths
+    # Customer: Bookings
+   
     path('bookings/create/',
          service_views.create_service_booking,
          name='create-service-booking'),
@@ -46,7 +46,7 @@ urlpatterns = [
      service_views.get_customer_analytics,
      name='customer-analytics'),
 
-    # ── Staff: Bookings ────────────────────────────────────────────
+    #  Staff Bookings 
     path('staff/bookings/',
          service_views.staff_get_all_service_bookings,
          name='staff-service-bookings'),
@@ -71,7 +71,7 @@ urlpatterns = [
          service_views.staff_get_service_statistics,
          name='staff-service-statistics'),
 
-     # ── Blue Book Renewal ──────────────────────────────────────────
+     # Blue Book Renewal
 path('blue-book/create/',
      service_views.create_blue_book_renewal,
      name='create-blue-book'),
@@ -84,9 +84,6 @@ path('staff/blue-book/',
      service_views.staff_get_all_blue_book_renewals,
      name='staff-blue-book'),
 
-path('staff/blue-book/<uuid:renewal_id>/update-status/',
-     service_views.staff_update_blue_book_status,
-     name='staff-blue-book-update'),  
 
      # Staff Mechanics
      

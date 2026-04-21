@@ -341,8 +341,7 @@ class BlueBookRenewal(models.Model):
         ('four_wheeler', 'Four Wheeler'), ('four_wheeler_ev', 'Four Wheeler EV'),
     )
     STATUS_CHOICES = (
-        ('submitted', 'Submitted'), ('under_review', 'Under Review'),
-        ('completed', 'Completed'), ('rejected', 'Rejected'),
+        ('submitted', 'Submitted'),
     )
     CITY_CHOICES = (
         ('kathmandu', 'Kathmandu'), ('lalitpur', 'Lalitpur'), ('bhaktapur', 'Bhaktapur'),

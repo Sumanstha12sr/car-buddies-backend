@@ -18,7 +18,7 @@ from .serializers import (
 )
 
 
-# ==================== HELPERS ====================
+#  HELPERS 
 
 def _send_email(subject, html_body, to_email):
     """Send HTML email. Silently logs on failure — never crashes a view."""
